@@ -158,6 +158,64 @@ def create_envs(
         eval_env = train_env
         record_env = train_env
 
+    elif env_type == "dexmachina":
+
+        import sys
+        import os
+
+        # 1. Add root workspace to path
+        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
+        from envs.FlashSAC.dexmachina_wrapper import GenesisFlashSACWrapper
+
+        # 2. Import Dexmachina's specific setup tools
+        import genesis as gs
+        from dexmachina.envs.base_env import BaseEnv
+        from dexmachina.envs.constructors import get_common_argparser, get_all_env_cfg, parse_clip_string
+
+
+        # Initialize Genesis backend
+        gs.init(backend=gs.gpu, logging_level='warning')
+        rl_device = kwargs.get("rl_device", "cuda:0")
+
+        # FlashSAC passes seed through the config
+        env_seed = kwargs.get("seed", 0)
+
+        def make_dexmachina_env(num_envs, device, hydra_kwargs, seed):
+            parser = get_common_argparser()
+            args, _ = parser.parse_known_args([])
+
+            # Override defaults with Hydra parameters
+            args.num_envs = num_envs
+            args.seed = seed
+
+            if "hand" in hydra_kwargs:
+                args.hand = hydra_kwargs["hand"]
+
+            if "clip" in hydra_kwargs:
+                args.clip = hydra_kwargs["clip"]
+
+            if "retarget_name" in hydra_kwargs:
+                args.retarget_name = hydra_kwargs["retarget_name"]
+
+            obj_name, start, end, subject_name, use_clip = parse_clip_string(args.clip)
+            args.arctic_object = obj_name
+            args.frame_start = start
+            args.frame_end = end
+
+            env_kwargs = get_all_env_cfg(args, device=device)
+            env_kwargs['env_cfg']['use_rl_games'] = True
+
+            return BaseEnv(**env_kwargs)
+
+        # 3. Create the raw environment
+        raw_train_env = make_dexmachina_env(num_train_envs, rl_device, kwargs, env_seed)
+
+        # 4. Wrap it in the standard Gym wrapper
+        train_env = GenesisFlashSACWrapper(raw_train_env, rl_device=rl_device)
+
+        eval_env = train_env
+        record_env = train_env
+
     else:
         raise NotImplementedError
 

@@ -3,9 +3,12 @@ import os
 os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
 os.environ["NUMEXPR_NUM_THREADS"] = "2"
-os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "highest"
+os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "float32"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
+
+# Force global initialization of Genesis to prevent local circular import crashes
+import genesis as gs
 
 import argparse
 import random

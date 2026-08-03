@@ -1,3 +1,5 @@
+[tool.setuptools.packages.find]
+include = ["flash_rl*"]
 [project]
 name = "FlashRL"
 version = "0.1.0"
