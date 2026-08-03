@@ -132,7 +132,10 @@ def run(args: argparse.Namespace) -> None:
         assert actions is not None
         actions = np.array(actions)
         next_observations, rewards, terminateds, truncateds, env_infos = train_env.step(actions)
-        next_buffer_observations = next_observations.copy()
+        if isinstance(next_observations, torch.Tensor):
+            next_buffer_observations = next_observations.clone()
+        else:
+            next_buffer_observations = next_observations.copy()
         for env_idx in range(cfg.num_train_envs):
             if terminateds[env_idx] or truncateds[env_idx]:
                 next_buffer_observations[env_idx] = env_infos["final_obs"][env_idx]

@@ -1,29 +1,36 @@
 import gymnasium as gym
-from gymnasium import spaces
+from gymnasium.vector import VectorEnv
+from gymnasium.vector.utils import batch_space
 import torch
 import numpy as np
 
 
-class GenesisFlashSACWrapper(gym.Env):
+class GenesisFlashSACWrapper(VectorEnv):
     """
-    Wraps Dexmachina's BaseEnv to look exactly like a Gymnasium vectorized
-    environment so FlashSAC can interact with it smoothly.
+    Wraps Dexmachina's BaseEnv as a Gymnasium VectorEnv compatible with FlashSAC.
     """
 
     def __init__(self, env, rl_device="cuda:0"):
-        super().__init__()
         self.env = env
         self.rl_device = rl_device
         self._clip_actions = self.env.action_clip
-
         self.num_envs = self.env.num_envs
 
-        self.observation_space = spaces.Box(
+        # Define single and batched spaces
+        single_obs_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.env.obs_dim,)
         )
-        self.action_space = spaces.Box(
+        single_action_space = gym.spaces.Box(
             low=-1.0, high=1.0, shape=(self.env.action_dim,)
         )
+
+        # Initialize VectorEnv attributes without passing invalid args to super().__init__()
+        super().__init__()
+        self.num_envs = self.num_envs
+        self.single_observation_space = single_obs_space
+        self.single_action_space = single_action_space
+        self.observation_space = batch_space(single_obs_space, self.num_envs)
+        self.action_space = batch_space(single_action_space, self.num_envs)
 
     def reset(self, seed=None, options=None):
         obs_dict, extras = self.env.reset()
@@ -32,9 +39,9 @@ class GenesisFlashSACWrapper(gym.Env):
         if extras is None:
             extras = {}
 
-        # --- FlashSAC requires these to build its neural networks ---
         extras["actor_observation_size"] = (self.env.obs_dim,)
         extras["critic_observation_size"] = (self.env.obs_dim,)
+        extras["num_envs"] = self.num_envs
 
         return obs, extras
 
@@ -44,9 +51,17 @@ class GenesisFlashSACWrapper(gym.Env):
         else:
             actions = actions.to(self.rl_device)
 
+        # Handle flattened or 1D actions
         if actions.ndim == 1:
             batch_size = actions.numel() // self.env.action_dim
             actions = actions.view(batch_size, self.env.action_dim)
+
+        # Safety fallback: If FlashSAC passes a single-env action batch (size 1)
+        # while num_envs is 1024, repeat it to match Dexmachina's parallel requirement
+        if actions.shape[0] == 1 and self.num_envs > 1:
+            actions = actions.repeat(self.num_envs, 1)
+
+        assert actions.shape[0] == self.num_envs, f"Expected action batch size {self.num_envs}, got {actions.shape[0]}"
 
         actions = torch.clamp(actions, -self._clip_actions, self._clip_actions)
 
@@ -61,6 +76,9 @@ class GenesisFlashSACWrapper(gym.Env):
             extras["episode_info"] = extras["log"]
 
         return obs, rew, terminated, truncated, extras
+
+    def render(self):
+        return None
 
     def close(self):
         pass
