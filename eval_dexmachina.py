@@ -15,6 +15,23 @@ from flash_rl.agents import create_agent
 from flash_rl.envs import create_envs
 from flash_rl.evaluation import evaluate, record_video
 
+# --- CAMERA INJECTION ---
+# Intercept BaseEnv initialization to force the camera on, bypassing FlashSAC's stubborn config loader
+from dexmachina.envs.base_env import BaseEnv
+
+_original_init = BaseEnv.__init__
+
+
+def _mocked_init(self, env_cfg, *args, **kwargs):
+    env_cfg['record_video'] = True
+    _original_init(self, env_cfg, *args, **kwargs)
+
+
+BaseEnv.__init__ = _mocked_init
+
+
+# -------------------------------------------------
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -36,6 +53,16 @@ def main():
     hydra.initialize_config_dir(version_base=None, config_dir=config_dir)
     cfg = hydra.compose(config_name=args.config_name, overrides=args.overrides)
     OmegaConf.resolve(cfg)
+
+    OmegaConf.set_struct(cfg, False)
+
+    # Inject it exactly where Dexmachina's BaseEnv looks for it
+    if hasattr(cfg.env, "env_cfg"):
+        cfg.env.env_cfg.record_video = True
+    else:
+        cfg.env.record_video = True
+
+    OmegaConf.set_struct(cfg, True)
 
     # Resume WandB logging under team entity 'schrapsi-kit'
     if args.wandb_run_id:
@@ -75,7 +102,15 @@ def main():
     video_info = record_video(agent, record_env, num_episodes=1, env_type=cfg.env.env_type)
 
     if "video" in video_info and wandb.run is not None:
-        video_array = video_info["video"]
+        video_array = video_info["video"][0]
+
+        # --- W&B Encoder Safety Fix ---
+        if video_array.dtype != np.uint8:
+            if video_array.max() <= 1.01:
+                video_array = video_array * 255.0
+            video_array = np.clip(video_array, 0, 255).astype(np.uint8)
+        # ------------------------------
+
         wandb.log({"eval_video": wandb.Video(video_array, fps=30, format="mp4")})
         print("[INFO] Successfully uploaded video to WandB!")
 

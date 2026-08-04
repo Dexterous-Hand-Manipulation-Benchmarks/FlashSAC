@@ -79,25 +79,37 @@ class GenesisFlashSACWrapper(VectorEnv):
 
     def render(self):
         """
-        Delegates rendering to Genesis/Dexmachina base environment.
-        Includes a safety fallback to prevent numpy AxisErrors if the camera is disabled.
+        Renders the environment using Dexmachina's natively initialized floating camera.
         """
-        if hasattr(self.env, "render"):
-            image = self.env.render()
-            if isinstance(image, torch.Tensor):
-                image = image.cpu().numpy()
+        if hasattr(self.env, "_floating_camera") and self.env._floating_camera is not None:
+            try:
+                # Force Genesis to render the frame
+                self.env._floating_camera.render()
+                image = self.env._floating_camera.rgba
 
-            if image is not None:
-                # Ensure batch dimension exists for FlashSAC (B, C, H, W)
+                # Move tensor to CPU numpy array
+                if isinstance(image, torch.Tensor):
+                    image = image.cpu().numpy()
+
+                # Drop the alpha channel (RGBA -> RGB) for WandB compatibility
+                if image.shape[-1] == 4:
+                    image = image[..., :3]
+
+                # Add batch dimension for FlashSAC (Batch, Height, Width, Channels)
                 if image.ndim == 3:
-                    # If channels are last (H, W, C), move them to front (C, H, W) for WandB
-                    if image.shape[-1] in [3, 4]:
-                        image = np.transpose(image, (2, 0, 1))
                     image = image[np.newaxis, ...]
-                return image
 
-        # Fallback: If camera is disabled, return a blank black frame (Batch, Channels, Height, Width)
-        return np.zeros((1, 3, 256, 256), dtype=np.uint8)
+                return image
+            except Exception as e:
+                print(f"[DEBUG] Camera rendering failed: {e}")
+        else:
+            # Only print once to avoid spamming the console 200 times
+            if not hasattr(self, "_camera_warning_printed"):
+                print("[DEBUG] self.env._floating_camera is missing. Did you pass env.record_video=True?")
+                self._camera_warning_printed = True
+
+        # Ultimate Fallback (Dexmachina cameras default to 160x160 resolution)
+        return np.zeros((1, 160, 160, 3), dtype=np.uint8)
 
     def close(self):
         pass
