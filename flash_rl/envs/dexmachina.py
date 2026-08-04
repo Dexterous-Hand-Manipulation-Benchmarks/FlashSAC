@@ -78,7 +78,26 @@ class GenesisFlashSACWrapper(VectorEnv):
         return obs, rew, terminated, truncated, extras
 
     def render(self):
-        return None
+        """
+        Delegates rendering to Genesis/Dexmachina base environment.
+        Includes a safety fallback to prevent numpy AxisErrors if the camera is disabled.
+        """
+        if hasattr(self.env, "render"):
+            image = self.env.render()
+            if isinstance(image, torch.Tensor):
+                image = image.cpu().numpy()
+
+            if image is not None:
+                # Ensure batch dimension exists for FlashSAC (B, C, H, W)
+                if image.ndim == 3:
+                    # If channels are last (H, W, C), move them to front (C, H, W) for WandB
+                    if image.shape[-1] in [3, 4]:
+                        image = np.transpose(image, (2, 0, 1))
+                    image = image[np.newaxis, ...]
+                return image
+
+        # Fallback: If camera is disabled, return a blank black frame (Batch, Channels, Height, Width)
+        return np.zeros((1, 3, 256, 256), dtype=np.uint8)
 
     def close(self):
         pass
