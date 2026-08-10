@@ -25,7 +25,7 @@ def _mocked_init(self, env_cfg, *args, **kwargs):
     if type(env_cfg).__name__ == "DictConfig":
         OmegaConf.set_struct(env_cfg, False)
 
-    # 1. Force Genesis to boot the visualizer (CRITICAL: Without this, add_camera returns None!)
+    # 1. Force Genesis to boot the visualizer
     if 'scene_kwargs' not in env_cfg:
         env_cfg['scene_kwargs'] = {}
     env_cfg['scene_kwargs']['use_visualizer'] = True
@@ -61,6 +61,7 @@ def main():
     parser.add_argument("--config_path", type=str, default="../../FlashSAC/configs",
                         help="Path to Hydra configs directory")
     parser.add_argument("--config_name", type=str, default="flashSAC_base")
+    parser.add_argument("--step", type=int, default=None, help="The exact interaction step to log this video at in W&B")
     parser.add_argument("--overrides", action="append", default=[])
     args = parser.parse_args()
 
@@ -108,8 +109,18 @@ def main():
                 video_array = video_array * 255.0
             video_array = np.clip(video_array, 0, 255).astype(np.uint8)
 
-        wandb.log({"eval_video": wandb.Video(video_array, fps=30, format="mp4")})
-        print("[INFO] Successfully uploaded video to WandB!")
+        # Add a caption instead of forcing the global step axis backward
+        cap_text = f"Checkpoint Step: {args.step}" if args.step else "Eval Video"
+        log_data = {"eval_video": wandb.Video(video_array, fps=30, format="mp4", caption=cap_text)}
+
+        # Log the step as a normal metric so it appears in the graphs,
+        # but omit the `step=` kwarg so W&B auto-increments time safely
+        if args.step is not None:
+            log_data["checkpoint_step"] = args.step
+            eval_info["checkpoint_step"] = args.step
+
+        wandb.log(log_data)
+        print(f"[INFO] Successfully uploaded video for {cap_text} to WandB!")
 
     if wandb.run is not None:
         wandb.log(eval_info)
