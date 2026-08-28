@@ -1,4 +1,5 @@
 import os
+import sys
 
 os.environ["OMP_NUM_THREADS"] = "2"
 os.environ["MKL_NUM_THREADS"] = "2"
@@ -10,9 +11,17 @@ os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_paralleli
 # Force global initialization of Genesis to prevent local circular import crashes
 import genesis as gs
 
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
+LOGGING_DIR = os.path.join(PROJECT_ROOT, "logging")
+
+for p in [LOGGING_DIR, PROJECT_ROOT, SCRIPT_DIR]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+
 import argparse
 import random
-import sys
 from datetime import datetime
 from typing import Optional
 
