@@ -27,24 +27,39 @@ from flash_rl.common import create_logger
 from flash_rl.envs import create_envs
 from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import Tensor
+from wandb_logger import UniversalLogger
 
 
 def run(args: argparse.Namespace) -> None:
     ###############################
     # configs
     ###############################
-
     config_path = args.config_path
     config_name = args.config_name
     overrides = args.overrides
 
     # eval resolver
-    OmegaConf.register_new_resolver("eval", lambda s: eval(s))
+    OmegaConf.register_new_resolver("eval", lambda s: eval(s), replace=True)
 
     # initialize config
     hydra.initialize(version_base=None, config_path=config_path)
     cfg = hydra.compose(config_name=config_name, overrides=overrides)
     OmegaConf.resolve(cfg)
+
+    # --- DYNAMIC LOGGER INSTALLATION ---
+    hand_name = getattr(cfg.env, "hand", "unknown_hand") if hasattr(cfg, "env") else "unknown_hand"
+    clip_name = getattr(cfg.env, "clip", "unknown_clip") if hasattr(cfg, "env") else "unknown_clip"
+    num_envs = getattr(cfg, "num_train_envs", 1024)
+    seed = getattr(cfg, "seed", 0)
+
+    UniversalLogger.install(
+        algo="flashsac",
+        hand=str(hand_name),
+        clip=str(clip_name),
+        seed=int(seed),
+        num_envs=int(num_envs),
+    )
+    # -----------------------------------
 
     ###############################
     # seeding / configuration
@@ -74,10 +89,6 @@ def run(args: argparse.Namespace) -> None:
     #############################
     # agent
     #############################
-
-    # Since the network architecture is typically tied to the learning algorithm,
-    #   we opted not to fully modularize the network for the sake of readability.
-    # Therefore, for each algorithm, the network is implemented within its respective directory.
 
     _, env_info = train_env.reset()
     agent = create_agent(
