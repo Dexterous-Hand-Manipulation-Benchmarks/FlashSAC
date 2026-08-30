@@ -65,15 +65,40 @@ class GenesisFlashSACWrapper(VectorEnv):
 
         actions = torch.clamp(actions, -self._clip_actions, self._clip_actions)
 
+        # Step underlying Dexmachina environment
         obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
         obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
+
+        # 1. Condition-only NaN guards for simulation divergence
+        if isinstance(obs, torch.Tensor) and torch.isnan(obs).any():
+            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+
+        if isinstance(rew, torch.Tensor) and torch.isnan(rew).any():
+            rew = torch.nan_to_num(rew, nan=0.0, posinf=0.0, neginf=0.0)
 
         if extras is None:
             extras = {}
 
+        # 2. Replay buffer final observation tracking
         extras["final_obs"] = obs.clone()
+
+        # 3. Episode info logging with finite-value sanitization
         if "log" in extras:
-            extras["episode_info"] = extras["log"]
+            raw_log = extras["log"]
+            clean_log = {}
+            for k, v in raw_log.items():
+                if isinstance(v, (float, int)):
+                    clean_log[k] = 0.0 if not np.isfinite(v) else v
+                elif isinstance(v, torch.Tensor):
+                    clean_v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
+                    clean_log[k] = clean_v.item() if clean_v.numel() == 1 else clean_v
+                elif isinstance(v, (list, np.ndarray)):
+                    arr = np.nan_to_num(np.asarray(v), nan=0.0, posinf=0.0, neginf=0.0)
+                    clean_log[k] = arr.tolist()
+                else:
+                    clean_log[k] = v
+            extras["episode_info"] = clean_log
+            extras["log"] = clean_log
 
         return obs, rew, terminated, truncated, extras
 
