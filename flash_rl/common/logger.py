@@ -1,7 +1,95 @@
-from typing import Any, Optional
-
+import time
+from typing import Any, Optional, Dict
 import numpy as np
+import torch
 from omegaconf import OmegaConf
+
+# Universal Metric Mapping
+METRIC_MAPPING: Dict[str, str] = {
+    # 3D Mesh Tracking & Evaluation
+    "auc_add": "eval/auc_add",
+    "AUC_ADD": "eval/auc_add",
+    "AUC-ADD": "eval/auc_add",
+    "add_auc": "eval/auc_add",
+    "ADD_AUC": "eval/auc_add",
+    "eval/auc_add": "eval/auc_add",
+    "add": "eval/add",
+    "ADD": "eval/add",
+    "add_mean": "eval/add",
+    "eval/add": "eval/add",
+    "success_2cm": "eval/success_2cm",
+    "success_5cm": "eval/success_5cm",
+    "eval/success_2cm": "eval/success_2cm",
+    "eval/success_5cm": "eval/success_5cm",
+    "avg_success_end": "eval/success_5cm",
+    "avg_success_once": "eval/success_once",
+    "eval/success_rate": "eval/success_5cm",
+    "success_rate": "eval/success_5cm",
+
+    # Returns & Lengths
+    "avg_return": "eval/return",
+    "eval/mean_reward": "eval/return",
+    "rewards/iter": "train/return",
+    "rewards/test": "eval/return",
+    "eval/avg_return": "eval/return",
+    "avg_length": "eval/ep_length",
+    "eval/mean_length": "eval/ep_length",
+    "length/iter": "train/ep_length",
+    "length/test": "eval/ep_length",
+
+    # Physical Errors & Forces
+    "contact_force": "env/contact_force",
+    "contact_forces": "env/contact_force",
+    "Episode/pos_dist": "env/pos_dist",
+    "pos_dist": "env/pos_dist",
+    "Episode/rot_dist": "env/rot_dist",
+    "rot_dist": "env/rot_dist",
+    "Episode/arti_dist": "env/arti_dist",
+    "arti_dist": "env/arti_dist",
+
+    # Policy & Critic Dynamics
+    "actor/entropy": "train/entropy",
+    "entropy": "train/entropy",
+    "actor/loss": "train/actor_loss",
+    "actor_loss": "train/actor_loss",
+    "critic/loss": "train/critic_loss",
+    "critic_loss": "train/critic_loss",
+    "actor/mean_action": "flash_sac/mean_action",
+    "critic/max_entropy_bonus": "flash_sac/max_entropy_bonus",
+
+    # System
+    "fps/total": "perf/fps",
+    "fps": "perf/fps",
+}
+
+IGNORED_KEYS = {"episode_rew"}
+
+
+def _sanitize_val(val: Any) -> Any:
+    if val is None:
+        return None
+    if isinstance(val, torch.Tensor):
+        if val.numel() == 0:
+            return None
+        if val.numel() == 1:
+            item = val.item()
+            return None if not np.isfinite(item) else item
+        val = val.detach().cpu().numpy()
+    if isinstance(val, (np.ndarray, list, tuple)):
+        arr = np.asarray(val)
+        if arr.size == 0 or not np.issubdtype(arr.dtype, np.number):
+            return None
+        finite_mask = np.isfinite(arr)
+        if not finite_mask.any():
+            return None
+        if not finite_mask.all():
+            arr = arr[finite_mask]
+        if arr.size == 1:
+            return float(arr.item())
+        return None  # Drop multi-element arrays to prevent W&B histogram serialization crashes
+    if isinstance(val, (int, float, np.floating, np.integer)):
+        return None if not np.isfinite(val) else (float(val) if isinstance(val, (float, np.floating)) else int(val))
+    return val
 
 
 class WandbTrainerLogger:
@@ -11,29 +99,65 @@ class WandbTrainerLogger:
         self._wandb = wandb
         self.cfg = cfg
         dict_cfg = OmegaConf.to_container(cfg, throw_on_missing=True)
-        wandb.init(
+        self.run = wandb.init(
             project=cfg.project_name,
             entity=cfg.entity_name,
             group=cfg.group_name,
-            config=dict_cfg,  # type: ignore
+            config=dict_cfg,
         )
+        self.start_time = time.time()
+        self._setup_metrics()
         self.media_dict: dict[str, Any] = {}
         self.reset()
 
+    def _setup_metrics(self) -> None:
+        self._wandb.define_metric("global/env_step")
+        self._wandb.define_metric("global/*", step_metric="global/env_step")
+        self._wandb.define_metric("train/*", step_metric="global/env_step")
+        self._wandb.define_metric("eval/*", step_metric="global/env_step")
+        self._wandb.define_metric("env/*", step_metric="global/env_step")
+        self._wandb.define_metric("perf/*", step_metric="global/env_step")
+        self._wandb.define_metric("flash_sac/*", step_metric="global/env_step")
+
     def update_metric(self, **kwargs: Any) -> None:
         for k, v in kwargs.items():
+            if k in IGNORED_KEYS:
+                continue
             if isinstance(v, (float, int)):
-                self.average_meter_dict.update(k, v)
+                if np.isfinite(v):
+                    self.average_meter_dict.update(k, v)
             elif isinstance(v, np.ndarray) and v.ndim == 5:
                 self.media_dict[k] = self._wandb.Video(v, fps=30, format="gif")
             else:
-                self.media_dict[k] = v
+                clean = _sanitize_val(v)
+                if clean is not None:
+                    if isinstance(clean, (float, int)):
+                        self.average_meter_dict.update(k, clean)
+                    else:
+                        self.media_dict[k] = clean
 
     def log_metric(self, step: int) -> None:
-        log_data = {}
-        log_data.update(self.average_meter_dict.averages())
-        log_data.update(self.media_dict)
-        self._wandb.log(log_data, step=step)
+        raw_data = {}
+        raw_data.update(self.average_meter_dict.averages())
+        raw_data.update(self.media_dict)
+
+        sanitized_payload = {
+            "global/env_step": int(step),
+            "global/wall_time_s": time.time() - self.start_time,
+        }
+
+        for key, val in raw_data.items():
+            clean_val = _sanitize_val(val)
+            if clean_val is None:
+                continue
+            if key in METRIC_MAPPING:
+                sanitized_payload[METRIC_MAPPING[key]] = clean_val
+            elif key.startswith(("global/", "train/", "eval/", "env/", "perf/", "flash_sac/")):
+                sanitized_payload[key] = clean_val
+            elif isinstance(val, (self._wandb.Video, self._wandb.Image)):
+                sanitized_payload[key] = val
+
+        self._wandb.log(sanitized_payload)
 
     def reset(self) -> None:
         self.average_meter_dict = AverageMeterDict()
@@ -43,51 +167,30 @@ class WandbTrainerLogger:
 class TensorboardTrainerLogger:
     def __init__(self, cfg: Any):
         from datetime import datetime
-
         from torch.utils.tensorboard import SummaryWriter
 
         timestamp = datetime.now().strftime("%m%d_%H%M%S")
         log_dir = f"runs/{cfg.group_name}/{cfg.exp_name}/{cfg.env.env_name}_seed{cfg.seed}_{timestamp}"
-        self.writer = SummaryWriter(log_dir=log_dir)  # type: ignore[no-untyped-call]
-        self.writer.add_text("config", OmegaConf.to_yaml(cfg))  # type: ignore[no-untyped-call]
+        self.writer = SummaryWriter(log_dir=log_dir)
+        self.writer.add_text("config", OmegaConf.to_yaml(cfg))
         self.media_dict: dict[str, Any] = {}
         self.reset()
 
     def update_metric(self, **kwargs: Any) -> None:
         for k, v in kwargs.items():
+            if k in IGNORED_KEYS:
+                continue
             if isinstance(v, (float, int)):
-                self.average_meter_dict.update(k, v)
+                if np.isfinite(v):
+                    self.average_meter_dict.update(k, v)
             else:
                 self.media_dict[k] = v
 
     def log_metric(self, step: int) -> None:
         for k, v in self.average_meter_dict.averages().items():
-            self.writer.add_scalar(k, v, global_step=step)  # type: ignore[no-untyped-call]
-        for k, v in self.media_dict.items():
-            if isinstance(v, np.ndarray) and v.ndim == 5:
-                # v: (B, T, C, H, W) uint8 — encode to animated gif, bypassing moviepy
-                import io
-
-                from PIL import Image
-                from tensorboard.compat.proto.summary_pb2 import Summary
-
-                frames = v[0].transpose(0, 2, 3, 1)  # (T, H, W, C)
-                frames_pil = [Image.fromarray(f) for f in frames]
-                buf = io.BytesIO()
-                frames_pil[0].save(
-                    buf,
-                    format="GIF",
-                    save_all=True,
-                    append_images=frames_pil[1:],
-                    duration=33,
-                    loop=0,
-                )
-                _, h, w, _ = frames.shape
-                image_summary = Summary.Image(encoded_image_string=buf.getvalue(), height=h, width=w)
-                summary = Summary(value=[Summary.Value(tag=k, image=image_summary)])
-                assert self.writer.file_writer is not None
-                self.writer.file_writer.add_summary(summary, global_step=step)
-        self.writer.flush()  # type: ignore[no-untyped-call]
+            mapped_key = METRIC_MAPPING.get(k, k)
+            self.writer.add_scalar(mapped_key, v, global_step=step)
+        self.writer.flush()
 
     def reset(self) -> None:
         self.average_meter_dict = AverageMeterDict()
@@ -95,10 +198,6 @@ class TensorboardTrainerLogger:
 
 
 class AverageMeter:
-    """
-    Tracks and calculates the average and current values of a series of numbers.
-    """
-
     def __init__(self) -> None:
         self.val = 0.0
         self.avg = 0.0
@@ -112,30 +211,24 @@ class AverageMeter:
         self.count = 0
 
     def update(self, val: float, n: int = 1) -> None:
-        # TODO: description for using n
-        self.val = val
-        self.sum += val * n
+        if not np.isfinite(val):
+            return
+        self.val = float(val)
+        self.sum += float(val) * n
         self.count += n
-        self.avg = self.sum / self.count
+        self.avg = self.sum / self.count if self.count > 0 else 0.0
 
     def __format__(self, format: str) -> str:
         return "{self.val:{format}} ({self.avg:{format}})".format(self=self, format=format)
 
 
 class AverageMeterDict:
-    """
-    Manages a collection of AverageMeter instances,
-    allowing for grouped tracking and averaging of multiple metrics.
-    """
-
-    def __init__(self, meters: Optional[dict[str, AverageMeter]] = None):
+    def __init__(self, meters: Optional[Dict[str, AverageMeter]] = None):
         self.meters = meters if meters else {}
 
     def __getitem__(self, key: str) -> AverageMeter:
         if key not in self.meters:
-            meter = AverageMeter()
-            meter.update(0)
-            return meter
+            self.meters[key] = AverageMeter()
         return self.meters[key]
 
     def update(self, name: str, value: float, n: int = 1) -> None:
