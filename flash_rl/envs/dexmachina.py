@@ -3,10 +3,10 @@ import numpy as np
 import gymnasium as gym
 
 
-class DexmachinaWrapper(gym.Env):
+class GenesisFlashSACWrapper(gym.Env):
     """
-    Standardized Dexmachina Gym wrapper for FlashSAC with online GPU tracking metrics,
-    NaN safeguards, and zero-overhead success rate calculations.
+    Standardized Dexmachina Gymnasium wrapper for FlashSAC with online GPU tracking metrics,
+    NaN safeguards, zero-overhead success rate calculations, and dynamic attribute forwarding.
     """
 
     def __init__(self, env, rl_device="cuda:0"):
@@ -133,6 +133,22 @@ class DexmachinaWrapper(gym.Env):
                 pass
         return np.zeros((1, 160, 160, 3), dtype=np.uint8)
 
+    def set_curriculum(self, epoch):
+        if hasattr(self.env, "set_curriculum"):
+            self.env.set_curriculum(epoch)
+
+    def __getattr__(self, name):
+        """Pass-through helper to expose internal BaseEnv attributes seamlessly."""
+        return getattr(self.env, name)
+
     def close(self):
         if hasattr(self.env, "close"):
             self.env.close()
+
+
+# Backwards Compatibility Aliases
+DexmachinaWrapper = GenesisFlashSACWrapper
+DexmachinaEnv = GenesisFlashSACWrapper
+DexMachinaEnv = GenesisFlashSACWrapper
+DexMachinaWrapper = GenesisFlashSACWrapper
+GenesisWrapper = GenesisFlashSACWrapper
