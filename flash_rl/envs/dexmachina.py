@@ -1,141 +1,138 @@
-import gymnasium as gym
-from gymnasium.vector import VectorEnv
-from gymnasium.vector.utils import batch_space
 import torch
 import numpy as np
+import gymnasium as gym
 
 
-class GenesisFlashSACWrapper(VectorEnv):
+class DexmachinaWrapper(gym.Env):
     """
-    Wraps Dexmachina's BaseEnv as a Gymnasium VectorEnv compatible with FlashSAC.
+    Standardized Dexmachina Gym wrapper for FlashSAC with online GPU tracking metrics,
+    NaN safeguards, and zero-overhead success rate calculations.
     """
 
     def __init__(self, env, rl_device="cuda:0"):
-        self.env = env
-        self.rl_device = rl_device
-        self._clip_actions = self.env.action_clip
-        self.num_envs = self.env.num_envs
-
-        # Define single and batched spaces
-        single_obs_space = gym.spaces.Box(
-            low=-np.inf, high=np.inf, shape=(self.env.obs_dim,)
-        )
-        single_action_space = gym.spaces.Box(
-            low=-1.0, high=1.0, shape=(self.env.action_dim,)
-        )
-
-        # Initialize VectorEnv attributes without passing invalid args to super().__init__()
         super().__init__()
-        self.num_envs = self.num_envs
-        self.single_observation_space = single_obs_space
-        self.single_action_space = single_action_space
-        self.observation_space = batch_space(single_obs_space, self.num_envs)
-        self.action_space = batch_space(single_action_space, self.num_envs)
+        self.env = env
+        self.sim_device = rl_device
+        self._clip_actions = getattr(self.env, "action_clip", 1.0)
+        self.num_envs = getattr(self.env, "num_envs", 1)
+
+        # Observation and action dimensions
+        self.num_obs = self.env.obs_dim
+        self.num_actions = self.env.action_dim
+        self.max_episode_steps = getattr(self.env, "max_episode_length", 200)
+
+        # Gymnasium Spaces
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.num_obs,), dtype=np.float32
+        )
+        self.action_space = gym.spaces.Box(
+            low=-self._clip_actions, high=self._clip_actions, shape=(self.num_actions,), dtype=np.float32
+        )
 
     def reset(self, seed=None, options=None):
         obs_dict, extras = self.env.reset()
         obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
 
-        if extras is None:
-            extras = {}
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.tensor(obs, device=self.sim_device, dtype=torch.float32)
+        else:
+            obs = obs.to(self.sim_device, dtype=torch.float32)
 
-        extras["actor_observation_size"] = (self.env.obs_dim,)
-        extras["critic_observation_size"] = (self.env.obs_dim,)
-        extras["num_envs"] = self.num_envs
+        if torch.isnan(obs).any():
+            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
 
         return obs, extras
 
     def step(self, actions):
         if not isinstance(actions, torch.Tensor):
-            actions = torch.tensor(actions, dtype=torch.float32, device=self.rl_device)
+            actions = torch.tensor(actions, dtype=torch.float32, device=self.sim_device)
         else:
-            actions = actions.to(self.rl_device)
+            actions = actions.to(self.sim_device)
 
-        # Handle flattened or 1D actions
         if actions.ndim == 1:
-            batch_size = actions.numel() // self.env.action_dim
-            actions = actions.view(batch_size, self.env.action_dim)
+            batch_size = actions.numel() // self.num_actions
+            actions = actions.view(batch_size, self.num_actions)
 
-        # Safety fallback: If FlashSAC passes a single-env action batch (size 1)
-        # while num_envs is 1024, repeat it to match Dexmachina's parallel requirement
         if actions.shape[0] == 1 and self.num_envs > 1:
             actions = actions.repeat(self.num_envs, 1)
 
-        assert actions.shape[0] == self.num_envs, f"Expected action batch size {self.num_envs}, got {actions.shape[0]}"
-
         actions = torch.clamp(actions, -self._clip_actions, self._clip_actions)
 
-        # Step underlying Dexmachina environment
         obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
         obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
 
-        # 1. Condition-only NaN guards for simulation divergence
-        if isinstance(obs, torch.Tensor) and torch.isnan(obs).any():
-            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+        if not isinstance(obs, torch.Tensor):
+            obs = torch.tensor(obs, device=self.sim_device, dtype=torch.float32)
+        if not isinstance(rew, torch.Tensor):
+            rew = torch.tensor(rew, device=self.sim_device, dtype=torch.float32)
+        if not isinstance(terminated, torch.Tensor):
+            terminated = torch.tensor(terminated, device=self.sim_device, dtype=torch.bool)
+        if not isinstance(truncated, torch.Tensor):
+            truncated = torch.tensor(truncated, device=self.sim_device, dtype=torch.bool)
 
-        if isinstance(rew, torch.Tensor) and torch.isnan(rew).any():
+        # In-flight NaN safeguards
+        if torch.isnan(obs).any():
+            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+        if torch.isnan(rew).any():
             rew = torch.nan_to_num(rew, nan=0.0, posinf=0.0, neginf=0.0)
 
-        if extras is None:
-            extras = {}
+        infos = {}
+        terminal_obs = extras.get("final_obs", extras.get("terminal_observation", obs)).clone()
+        infos["final_obs"] = terminal_obs
 
-        # 2. Replay buffer final observation tracking
-        extras["final_obs"] = obs.clone()
+        # --- High-Speed GPU Online Success & Tracking Error Metrics ---
+        if hasattr(self.env, "rew_dict") and isinstance(self.env.rew_dict, dict):
+            rew_dict = self.env.rew_dict
+            pos_dist = rew_dict.get("pos_dist", None)
+            rot_dist = rew_dict.get("rot_dist", None)
+            arti_dist = rew_dict.get("arti_dist", None)
 
-        # 3. Episode info logging with finite-value sanitization
+            if pos_dist is not None and rot_dist is not None:
+                succ_2cm = (pos_dist < 0.02) & (rot_dist < 0.20)
+                succ_5cm = (pos_dist < 0.05) & (rot_dist < 0.35)
+                if arti_dist is not None:
+                    succ_2cm = succ_2cm & (arti_dist < 0.10)
+                    succ_5cm = succ_5cm & (arti_dist < 0.15)
+
+                infos["eval/success_2cm"] = succ_2cm.float().mean().item()
+                infos["eval/success_5cm"] = succ_5cm.float().mean().item()
+                infos["env/pos_dist"] = pos_dist.mean().item()
+                infos["env/rot_dist"] = rot_dist.mean().item()
+                if arti_dist is not None:
+                    infos["env/arti_dist"] = arti_dist.mean().item()
+
+            if "keypoint_dist" in rew_dict:
+                infos["env/keypoint_dist"] = rew_dict["keypoint_dist"].mean().item()
+            if "wrist_pdist" in rew_dict:
+                infos["env/wrist_pdist"] = rew_dict["wrist_pdist"].mean().item()
+            if "contact_force" in rew_dict:
+                infos["env/contact_force"] = rew_dict["contact_force"].mean().item()
+
         if "log" in extras:
-            raw_log = extras["log"]
-            clean_log = {}
-            for k, v in raw_log.items():
-                if isinstance(v, (float, int)):
-                    clean_log[k] = 0.0 if not np.isfinite(v) else v
-                elif isinstance(v, torch.Tensor):
-                    clean_v = torch.nan_to_num(v, nan=0.0, posinf=0.0, neginf=0.0)
-                    clean_log[k] = clean_v.item() if clean_v.numel() == 1 else clean_v
-                elif isinstance(v, (list, np.ndarray)):
-                    arr = np.nan_to_num(np.asarray(v), nan=0.0, posinf=0.0, neginf=0.0)
-                    clean_log[k] = arr.tolist()
-                else:
-                    clean_log[k] = v
-            extras["episode_info"] = clean_log
-            extras["log"] = clean_log
+            infos["episode_info"] = extras["log"]
 
-        return obs, rew, terminated, truncated, extras
+        return obs, rew, terminated, truncated, infos
 
     def render(self):
-        """
-        Goes through FlashSAC's Gym wrappers to find Dexmachina's BaseEnv
-        and renders using the native floating camera.
-        """
-        curr_env = self.env
-
-        # Search until we find the base environment with the camera
-        while hasattr(curr_env, "env") and not hasattr(curr_env, "_floating_camera"):
-            curr_env = curr_env.env
-
-        if hasattr(curr_env, "_floating_camera") and curr_env._floating_camera is not None:
+        if hasattr(self.env, "_floating_camera") and self.env._floating_camera is not None:
             try:
-                # Genesis camera.render() returns a tuple: (frame, depth, segmentation, normal)
-                out = curr_env._floating_camera.render(segmentation=False)
-                frame = out[0] if isinstance(out, tuple) else out
-
-                if isinstance(frame, torch.Tensor):
-                    frame = frame.cpu().numpy()
-
-                # Drop the alpha channel if it's RGBA
-                if frame.shape[-1] == 4:
-                    frame = frame[..., :3]
-
-                # Add the FlashSAC required batch dimension
-                if frame.ndim == 3:
-                    frame = frame[np.newaxis, ...]
-
-                return frame
-            except Exception as e:
-                print(f"[DEBUG] Camera extraction failed: {e}")
-
-        # Ultimate Fallback
-        return np.zeros((1, 256, 256, 3), dtype=np.uint8)
+                render_out = self.env._floating_camera.render()
+                image = render_out[0] if isinstance(render_out, tuple) else render_out
+                if isinstance(image, torch.Tensor):
+                    image = image.cpu().numpy()
+                if image.shape[-1] == 4:
+                    image = image[..., :3]
+                if image.dtype != np.uint8:
+                    if image.max() <= 1.01:
+                        image = image * 255.0
+                    image = np.clip(image, 0, 255).astype(np.uint8)
+                if image.ndim == 3:
+                    image = image[np.newaxis, ...]
+                return image
+            except Exception:
+                pass
+        return np.zeros((1, 160, 160, 3), dtype=np.uint8)
 
     def close(self):
-        pass
+        if hasattr(self.env, "close"):
+            self.env.close()

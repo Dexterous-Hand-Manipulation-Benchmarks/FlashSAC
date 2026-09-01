@@ -163,7 +163,22 @@ def run(args: argparse.Namespace) -> None:
 
         assert actions is not None
         actions = np.array(actions)
+
         next_observations, rewards, terminateds, truncateds, env_infos = train_env.step(actions)
+
+        # Log online tracking and success rate metrics
+        metric_payload = {}
+        for k in ["eval/success_2cm", "eval/success_5cm", "env/pos_dist", "env/rot_dist", "env/arti_dist",
+                  "env/keypoint_dist", "env/wrist_pdist", "env/contact_force"]:
+            if k in env_infos:
+                metric_payload[k] = env_infos[k]
+
+        if metric_payload:
+            logger.update_metric(**metric_payload)
+
+        if "episode_info" in env_infos:
+            logger.update_metric(**env_infos["episode_info"])
+
         if isinstance(next_observations, torch.Tensor):
             next_buffer_observations = next_observations.clone()
         else:
