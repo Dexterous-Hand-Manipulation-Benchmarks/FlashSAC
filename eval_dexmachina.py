@@ -191,6 +191,9 @@ def main():
 
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
+    # Capture training environment count before overriding for evaluation
+    training_num_envs = getattr(cfg, "num_train_envs", getattr(cfg.env, "num_train_envs", 1024))
+
     # 1. Instantiate Evaluation Environments via Native FlashSAC Builder
     if hasattr(cfg, "env"):
         cfg.env.num_train_envs = 1
@@ -357,11 +360,21 @@ def main():
     # 6. Upload All Metrics & Video to WandB
     if args.wandb_run_id:
         print(f"[INFO] Connecting to WandB run {args.wandb_run_id} ({args.entity}/{args.project})...")
+        hand_name = getattr(cfg.env, "hand", "unknown_hand") if hasattr(cfg, "env") else "unknown_hand"
+        clip_name = getattr(cfg.env, "clip", "unknown_clip") if hasattr(cfg, "env") else "unknown_clip"
+        UniversalLogger.install(
+            algo="flash_sac",
+            hand=str(hand_name),
+            clip=str(clip_name),
+            seed=int(getattr(cfg, "seed", 0)),
+            num_train_envs=int(training_num_envs),
+            num_eval_envs=1,
+        )
+
         wandb.init(id=args.wandb_run_id, project=args.project, entity=args.entity, resume="allow")
 
-        # Convert interaction step to environment steps (step * 1024 envs)
-        num_envs = getattr(cfg.env, "num_train_envs", 1024)
-        env_step_num = (args.step * num_envs) if args.step is not None else None
+        # Convert interaction step to environment steps (step * training_num_envs)
+        env_step_num = (args.step * training_num_envs) if args.step is not None else None
 
         log_payload = {
             "eval/return": ep_return,
@@ -389,11 +402,11 @@ def main():
         if last_video_path and os.path.exists(last_video_path):
             cap_text = f"Checkpoint Step: {args.step}" if args.step is not None else "Eval Video"
             fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
-            log_payload["eval_video"] = wandb.Video(last_video_path, fps=fps, format="mp4", caption=cap_text)
+            log_payload["media/eval_video"] = wandb.Video(last_video_path, fps=fps, format="gif", caption=cap_text)
             print(f"[INFO] Attached video to WandB payload.")
 
         if args.step is not None:
-            log_payload["checkpoint_step"] = args.step
+            log_payload["global/step"] = env_step_num
             log_payload["global/env_step"] = env_step_num
 
         if log_payload:

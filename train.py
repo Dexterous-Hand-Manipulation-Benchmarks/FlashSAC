@@ -58,15 +58,17 @@ def run(args: argparse.Namespace) -> None:
     # --- DYNAMIC LOGGER INSTALLATION ---
     hand_name = getattr(cfg.env, "hand", "unknown_hand") if hasattr(cfg, "env") else "unknown_hand"
     clip_name = getattr(cfg.env, "clip", "unknown_clip") if hasattr(cfg, "env") else "unknown_clip"
-    num_envs = getattr(cfg, "num_train_envs", 1024)
+    num_train = getattr(cfg, "num_train_envs", 1024)
+    num_eval = getattr(cfg, "num_eval_envs", None) or getattr(cfg, "num_eval_episodes", None)
     seed = getattr(cfg, "seed", 0)
 
     UniversalLogger.install(
-        algo="flashsac",
+        algo="flash_sac",
         hand=str(hand_name),
         clip=str(clip_name),
         seed=int(seed),
-        num_envs=int(num_envs),
+        num_train_envs=int(num_train),
+        num_eval_envs=int(num_eval) if num_eval is not None else None,
     )
     # -----------------------------------
 
