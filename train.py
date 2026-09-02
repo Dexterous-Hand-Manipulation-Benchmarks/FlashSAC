@@ -139,7 +139,19 @@ def run(args: argparse.Namespace) -> None:
     update_counter = 0
     update_info = {}
 
+    current_epoch = -1
+    max_epochs = 5000
+    base_env = getattr(train_env, "env", getattr(train_env, "base_env", train_env))
+
     for interaction_step in tqdm.tqdm(range(1, int(cfg.num_interaction_steps + 1)), smoothing=0.1, mininterval=0.5):
+        # 1. Update Dexmachina Curriculum
+        if hasattr(base_env, "set_curriculum"):
+            epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
+            if epoch > current_epoch:
+                base_env.set_curriculum(epoch)
+                current_epoch = epoch
+        else:
+            raise NotImplementedError("Tried to set curriculum, curriculum not implemented.")
         # using env steps simplifies the comparison with the performance reported in the paper.
         env_step = interaction_step * cfg.num_train_envs
 
@@ -151,7 +163,22 @@ def run(args: argparse.Namespace) -> None:
 
         assert actions is not None
         actions = np.array(actions)
+
         next_observations, rewards, terminateds, truncateds, env_infos = train_env.step(actions)
+
+        # Log online tracking and success rate metrics
+        metric_payload = {}
+        for k in ["eval/success_2cm", "eval/success_5cm", "env/pos_dist", "env/rot_dist", "env/arti_dist",
+                  "env/keypoint_dist", "env/wrist_pdist", "env/contact_force"]:
+            if k in env_infos:
+                metric_payload[k] = env_infos[k]
+
+        if metric_payload:
+            logger.update_metric(**metric_payload)
+
+        if "episode_info" in env_infos:
+            logger.update_metric(**env_infos["episode_info"])
+
         if isinstance(next_observations, torch.Tensor):
             next_buffer_observations = next_observations.clone()
         else:
@@ -201,6 +228,18 @@ def run(args: argparse.Namespace) -> None:
 
             # logging
             if cfg.logging_per_interaction_step and interaction_step % cfg.logging_per_interaction_step == 0:
+                # Log active curriculum parameters
+                if hasattr(base_env, "kp"):
+                    kp_val = base_env.kp.mean().item() if isinstance(base_env.kp, torch.Tensor) else float(base_env.kp)
+                    kv_val = base_env.kv.mean().item() if isinstance(base_env.kv, torch.Tensor) else float(base_env.kv)
+                    logger.update_metric(
+                        **{
+                            "env/curriculum_epoch": current_epoch,
+                            "env/kp": kp_val,
+                            "env/kv": kv_val,
+                        }
+                    )
+                logger.log_metric(step=env_step)
                 logger.log_metric(step=env_step)
                 logger.reset()
 
