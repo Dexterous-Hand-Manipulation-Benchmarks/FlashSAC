@@ -111,19 +111,17 @@ def main():
 
         # Add a caption instead of forcing the global step axis backward
         cap_text = f"Checkpoint Step: {args.step}" if args.step else "Eval Video"
-        log_data = {"eval_video": wandb.Video(video_array, fps=30, format="mp4", caption=cap_text)}
+        log_data = {"eval/video": wandb.Video(video_array, fps=30, format="gif", caption=cap_text)}
 
-        # Log the step as a normal metric so it appears in the graphs,
-        # but omit the `step=` kwarg so W&B auto-increments time safely
         if args.step is not None:
-            log_data["checkpoint_step"] = args.step
-            eval_info["checkpoint_step"] = args.step
+            log_data["global/env_step"] = args.step
+            eval_info["global/env_step"] = args.step
 
-        wandb.log(log_data)
+        wandb.log(log_data, step=args.step)
         print(f"[INFO] Successfully uploaded video for {cap_text} to WandB!")
 
     if wandb.run is not None:
-        wandb.log(eval_info)
+        wandb.log(eval_info, step=args.step)
         wandb.finish()
 
     eval_env.close()
