@@ -231,11 +231,11 @@ def run(args: argparse.Namespace) -> None:
             if cfg.logging_per_interaction_step and interaction_step % cfg.logging_per_interaction_step == 0:
                 curriculum_logs = {}
 
-                # Check 1: Dexmachina step extra dictionary
-                if "episode_info" in env_infos:
-                    for k in ["env/kp", "env/kv", "env/kp_lower", "env/kv_lower", "env/kpts_dist_left"]:
-                        if k in env_infos["episode_info"]:
-                            curriculum_logs[k] = env_infos["episode_info"][k]
+                # Check 1: Root Gymnasium info dictionary
+                for k in ["env/kp", "env/kv", "env/kp_lower", "env/kv_lower", "env/kpts_dist_left", "env/fr",
+                          "env/fr_lower"]:
+                    if k in env_infos:
+                        curriculum_logs[k] = env_infos[k]
 
                 # Check 2: Direct query on Genesis object joint gains
                 if not curriculum_logs and hasattr(base_env, "objects") and len(

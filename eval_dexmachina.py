@@ -378,11 +378,7 @@ def main():
         log_payload = {
             "eval/return": ep_return,
             "eval/ep_length": float(ep_len),
-            "env/kp": float(env_cfg.get("kp", getattr(uenv, "kp", 80.0))),
-            "env/kv": float(env_cfg.get("kv", getattr(uenv, "kv", 5.0))),
-            "env/kp_lower": float(env_cfg.get("kp_lower", getattr(uenv, "kp_lower", 80.0))),
-            "env/kv_lower": float(env_cfg.get("kv_lower", getattr(uenv, "kv_lower", 5.0))),
-        }
+           }
 
         if stats is not None:
             if "auc" in stats and "overall" in stats["auc"]:
