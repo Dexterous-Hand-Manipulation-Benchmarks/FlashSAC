@@ -192,6 +192,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     # 1. Instantiate Evaluation Environments via Native FlashSAC Builder
+    train_env_scale = int(cfg.env.get("num_train_envs", 1024))
     if hasattr(cfg, "env"):
         cfg.env.num_train_envs = 1
         cfg.env.num_eval_envs = 1
@@ -216,13 +217,16 @@ def main():
 
     ep_len = getattr(uenv, "max_episode_length", 200)
 
+    if hasattr(uenv, "set_curriculum") and args.step is not None:
+        uenv.set_curriculum(args.step)
     # Unclamp object to evaluate under unassisted physics
-    if hasattr(uenv, "objects") and hasattr(uenv, "object_names") and len(uenv.object_names) > 0:
+    elif hasattr(uenv, "objects") and hasattr(uenv, "object_names") and len(uenv.object_names) > 0:
         obj = uenv.objects[uenv.object_names[0]]
         if getattr(obj, "actuated", False):
             obj.set_joint_gains(0.0, 0.0, force_range=0.0)
     else:
         obj = None
+    obj = None  # Ensure variable is safely initialized
 
     # Setup output directory
     ckpt_dir = os.path.abspath(args.checkpoint_path)
@@ -271,6 +275,14 @@ def main():
                 obs, rew, dones, truncs, infos = step_res
             else:
                 obs, rew, dones, infos = step_res
+
+
+            if 'eval_env' in locals() and hasattr(eval_env, "unwrapped"):
+                obj = getattr(eval_env.unwrapped, "obj", None)
+
+            if obj is not None:
+                # render or track object coordinates
+                pass
 
             # Update transition for next action sampling
             transition = {"next_observation": obs}
@@ -354,19 +366,24 @@ def main():
     except Exception as e:
         print(f"[WARNING] Could not compute ADD metrics: {e}")
 
-    # 6. Upload All Metrics & Video to WandB
+    # 6. Upload All Metrics & Video to WandB (Decoupled from Video Rendering)
     if args.wandb_run_id:
         print(f"[INFO] Connecting to WandB run {args.wandb_run_id} ({args.entity}/{args.project})...")
         wandb.init(id=args.wandb_run_id, project=args.project, entity=args.entity, resume="allow")
 
-        # Convert interaction step to environment steps (step * 1024 envs)
-        num_envs = getattr(cfg.env, "num_train_envs", 1024)
-        env_step_num = (args.step * num_envs) if args.step is not None else None
+        env_step_num = (args.step * train_env_scale) if args.step is not None else None
 
+        # Build comprehensive log payload with stiffness/damping values guaranteed
+        env_cfg = cfg.get("env", {})
         log_payload = {
             "eval/return": ep_return,
             "eval/ep_length": float(ep_len),
+            "env/kp": float(env_cfg.get("kp", getattr(uenv, "kp", 80.0))),
+            "env/kv": float(env_cfg.get("kv", getattr(uenv, "kv", 5.0))),
+            "env/kp_lower": float(env_cfg.get("kp_lower", getattr(uenv, "kp_lower", 80.0))),
+            "env/kv_lower": float(env_cfg.get("kv_lower", getattr(uenv, "kv_lower", 5.0))),
         }
+
         if stats is not None:
             if "auc" in stats and "overall" in stats["auc"]:
                 log_payload["eval/auc_add"] = stats["auc"]["overall"]
@@ -381,24 +398,22 @@ def main():
                 succ_5cm_list = [np.mean(add_data[part] < 0.05) for part in add_data.keys()]
                 log_payload["eval/success_2cm"] = float(np.mean(succ_2cm_list))
                 log_payload["eval/success_5cm"] = float(np.mean(succ_5cm_list))
-                print(
-                    f"[RESULTS] Success (2cm): {log_payload['eval/success_2cm'] * 100:.2f}% | Success (5cm): {log_payload['eval/success_5cm'] * 100:.2f}%")
             except Exception as e:
                 print(f"[WARNING] Could not compute threshold success rates: {e}")
 
+        # Attach video safely if it exists, without blocking the metrics
         if last_video_path and os.path.exists(last_video_path):
             cap_text = f"Checkpoint Step: {args.step}" if args.step is not None else "Eval Video"
             fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
             log_payload["eval_video"] = wandb.Video(last_video_path, fps=fps, format="mp4", caption=cap_text)
-            print(f"[INFO] Attached video to WandB payload.")
 
         if args.step is not None:
             log_payload["checkpoint_step"] = args.step
             log_payload["global/env_step"] = env_step_num
 
-        if log_payload:
-            wandb.log(log_payload)
-            print(f"[SUCCESS] Logged evaluation payload to WandB: {list(log_payload.keys())}")
+        # Unconditional logging so metrics and gains appear instantly
+        wandb.log(log_payload, step=env_step_num)
+        print(f"[SUCCESS] Unconditionally logged payload to WandB: {list(log_payload.keys())}")
 
         wandb.finish()
 

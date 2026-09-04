@@ -108,6 +108,12 @@ class GenesisFlashSACWrapper(gym.Env):
             if "contact_force" in rew_dict:
                 infos["env/contact_force"] = rew_dict["contact_force"].mean().item()
 
+        # --- Explicitly Forward Gain and Stiffness Parameters for WandB ---
+        for param_name in ["kp", "kv", "fr", "kp_lower", "kv_lower", "fr_lower"]:
+            if hasattr(self.env, param_name):
+                val = getattr(self.env, param_name)
+                infos[f"env/{param_name}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(val)
+
         if "log" in extras:
             infos["episode_info"] = extras["log"]
 

@@ -146,10 +146,11 @@ def run(args: argparse.Namespace) -> None:
     for interaction_step in tqdm.tqdm(range(1, int(cfg.num_interaction_steps + 1)), smoothing=0.1, mininterval=0.5):
         # 1. Update Dexmachina Curriculum
         if hasattr(base_env, "set_curriculum"):
-            epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
-            if epoch > current_epoch:
-                base_env.set_curriculum(epoch)
-                current_epoch = epoch
+            #epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
+            #if epoch > current_epoch:
+                #base_env.set_curriculum(epoch)
+                #current_epoch = epoch
+            base_env.set_curriculum(interaction_step)
         else:
             raise NotImplementedError("Tried to set curriculum, curriculum not implemented.")
         # using env steps simplifies the comparison with the performance reported in the paper.
@@ -228,18 +229,36 @@ def run(args: argparse.Namespace) -> None:
 
             # logging
             if cfg.logging_per_interaction_step and interaction_step % cfg.logging_per_interaction_step == 0:
-                # Log active curriculum parameters
-                if hasattr(base_env, "kp"):
-                    kp_val = base_env.kp.mean().item() if isinstance(base_env.kp, torch.Tensor) else float(base_env.kp)
-                    kv_val = base_env.kv.mean().item() if isinstance(base_env.kv, torch.Tensor) else float(base_env.kv)
-                    logger.update_metric(
-                        **{
-                            "env/curriculum_epoch": current_epoch,
-                            "env/kp": kp_val,
-                            "env/kv": kv_val,
-                        }
-                    )
-                logger.log_metric(step=env_step)
+                curriculum_logs = {}
+
+                # Check 1: Dexmachina step extra dictionary
+                if "episode_info" in env_infos:
+                    for k in ["env/kp", "env/kv", "env/kp_lower", "env/kv_lower", "env/kpts_dist_left"]:
+                        if k in env_infos["episode_info"]:
+                            curriculum_logs[k] = env_infos["episode_info"][k]
+
+                # Check 2: Direct query on Genesis object joint gains
+                if not curriculum_logs and hasattr(base_env, "objects") and len(
+                        getattr(base_env, "object_names", [])) > 0:
+                    target_obj = base_env.objects[base_env.object_names[0]]
+                    if hasattr(target_obj, "get_joint_gains"):
+                        kp_val, kv_val = target_obj.get_joint_gains()
+                        curriculum_logs["env/kp"] = float(
+                            kp_val.mean().item() if isinstance(kp_val, torch.Tensor) else np.mean(kp_val))
+                        curriculum_logs["env/kv"] = float(
+                            kv_val.mean().item() if isinstance(kv_val, torch.Tensor) else np.mean(kv_val))
+
+                # Check 3: Explicit curriculum attributes on BaseEnv
+                if not curriculum_logs:
+                    for attr, key in [("curriculum_kp", "env/kp"), ("curriculum_kv", "env/kv"), ("kp", "env/kp"),
+                                      ("kv", "env/kv")]:
+                        if hasattr(base_env, attr):
+                            val = getattr(base_env, attr)
+                            curriculum_logs[key] = float(val.mean().item() if isinstance(val, torch.Tensor) else val)
+
+                curriculum_logs["env/curriculum_step"] = interaction_step
+                logger.update_metric(**curriculum_logs)
+
                 logger.log_metric(step=env_step)
                 logger.reset()
 
