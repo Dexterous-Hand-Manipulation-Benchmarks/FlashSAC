@@ -146,11 +146,10 @@ def run(args: argparse.Namespace) -> None:
     for interaction_step in tqdm.tqdm(range(1, int(cfg.num_interaction_steps + 1)), smoothing=0.1, mininterval=0.5):
         # 1. Update Dexmachina Curriculum
         if hasattr(base_env, "set_curriculum"):
-            #epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
-            #if epoch > current_epoch:
-                #base_env.set_curriculum(epoch)
-                #current_epoch = epoch
-            base_env.set_curriculum(interaction_step)
+            epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
+            if epoch > current_epoch:
+                base_env.set_curriculum(epoch)
+                current_epoch = epoch
         else:
             raise NotImplementedError("Tried to set curriculum, curriculum not implemented.")
         # using env steps simplifies the comparison with the performance reported in the paper.
