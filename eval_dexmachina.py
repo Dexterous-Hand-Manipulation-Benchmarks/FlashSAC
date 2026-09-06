@@ -144,8 +144,8 @@ def get_demo_state_tensor(uenv, device):
     return None
 
 
-def run_eval_pass(target_env, uenv, agent, mode_name, out_dir, demo_state_tensor, obj_name):
-    """Executes a single rollout pass, saves data, encodes video, and computes ADD metrics."""
+def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, demo_state_tensor, obj_name):
+    """Executes a single rollout pass, writes video/npy files, and logs to metric_prefix."""
     ep_len = getattr(uenv, "max_episode_length", 200)
     reset_res = target_env.reset()
     obs = reset_res[0] if isinstance(reset_res, tuple) else reset_res
@@ -159,7 +159,7 @@ def run_eval_pass(target_env, uenv, agent, mode_name, out_dir, demo_state_tensor
     accumulated_rewards = 0.0
     manual_renders = []
 
-    print(f"[INFO] Running rollout for '{mode_name}' ({ep_len} steps)...")
+    print(f"[INFO] Running rollout for '{file_tag}' ({ep_len} steps)...")
     for i in range(ep_len):
         with torch.no_grad():
             env_step = uenv.episode_length_buf.cpu().numpy()[0] if hasattr(uenv, "episode_length_buf") else i
@@ -196,32 +196,34 @@ def run_eval_pass(target_env, uenv, agent, mode_name, out_dir, demo_state_tensor
                 except Exception:
                     pass
 
+    # Save rollout arrays using clean file tag
     eval_data = {k: np.stack(v) for k, v in eval_data.items()}
-    out_file = os.path.join(out_dir, f"{mode_name}_eval.npy")
+    out_file = os.path.join(out_dir, f"{file_tag}_eval.npy")
     np.save(out_file, eval_data)
 
     video_path = None
     clean_renders = [sanitize_frame(r) for r in manual_renders if sanitize_frame(r) is not None]
     if len(clean_renders) > 0:
-        video_path = os.path.join(out_dir, f"{mode_name}_video.mp4")
+        video_path = os.path.join(out_dir, f"{file_tag}_video.mp4")
         fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
         if write_video_file(clean_renders, video_path, fps=fps):
-            print(f"[SUCCESS] Saved video for {mode_name} to {video_path}")
+            print(f"[SUCCESS] Saved video for {file_tag} to {video_path}")
 
+    # Build metric dictionary under metric_prefix
     metrics = {
-        f"{mode_name}/return": accumulated_rewards,
-        f"{mode_name}/ep_length": float(ep_len),
+        f"{metric_prefix}/return": accumulated_rewards,
+        f"{metric_prefix}/ep_length": float(ep_len),
     }
 
     try:
         from dexmachina.eval.compute_add import compute_for_eval
-        stats_path = os.path.join(out_dir, f"{mode_name}_add_stats.json")
+        stats_path = os.path.join(out_dir, f"{file_tag}_add_stats.json")
         cache_sub_verts = os.path.join(dexmachina_dir, "dexmachina", "eval", "sub_verts")
         compute_for_eval(
             eval_path=out_file,
             obj_name=obj_name,
-            out_name=f"{mode_name}_add.npy",
-            stats_name=f"{mode_name}_add_stats.json",
+            out_name=f"{file_tag}_add.npy",
+            stats_name=f"{file_tag}_add_stats.json",
             overwrite=True,
             output_cache=False,
             cache_dir=cache_sub_verts if os.path.exists(cache_sub_verts) else "dexmachina/eval/sub_verts",
@@ -229,18 +231,18 @@ def run_eval_pass(target_env, uenv, agent, mode_name, out_dir, demo_state_tensor
         if os.path.exists(stats_path):
             with open(stats_path, "r") as f:
                 stats = json.load(f)
-            metrics[f"{mode_name}/auc_add"] = stats.get("auc", {}).get("overall", 0.0)
-            metrics[f"{mode_name}/add"] = stats.get("mean_add", {}).get("overall", 0.0)
+            metrics[f"{metric_prefix}/auc_add"] = stats.get("auc", {}).get("overall", 0.0)
+            metrics[f"{metric_prefix}/add"] = stats.get("mean_add", {}).get("overall", 0.0)
 
-        add_npy_path = os.path.join(out_dir, f"{mode_name}_add.npy")
+        add_npy_path = os.path.join(out_dir, f"{file_tag}_add.npy")
         if os.path.exists(add_npy_path):
             add_data = np.load(add_npy_path, allow_pickle=True).item()
             succ_2cm = [np.mean(add_data[part] < 0.02) for part in add_data.keys()]
             succ_5cm = [np.mean(add_data[part] < 0.05) for part in add_data.keys()]
-            metrics[f"{mode_name}/success_2cm"] = float(np.mean(succ_2cm))
-            metrics[f"{mode_name}/success_5cm"] = float(np.mean(succ_5cm))
+            metrics[f"{metric_prefix}/success_2cm"] = float(np.mean(succ_2cm))
+            metrics[f"{metric_prefix}/success_5cm"] = float(np.mean(succ_5cm))
     except Exception as e:
-        print(f"[WARNING] ADD calculation failed for {mode_name}: {e}")
+        print(f"[WARNING] ADD calculation failed for {file_tag}: {e}")
 
     return metrics, video_path
 
@@ -296,7 +298,7 @@ def main():
     log_payload = {}
     target_obj = uenv.objects[uenv.object_names[0]] if (hasattr(uenv, "objects") and uenv.object_names) else None
 
-    # --- PASS 1: ASSISTED EVALUATION ---
+    # PASS 1: ASSISTED EVALUATION (eval/assisted/*)
     TOTAL_INTERACTION_STEPS = 48829  # 50_000_896 / 1024 envs
     MAX_EPOCHS = 5000
     if hasattr(uenv, "set_curriculum") and args.step is not None:
@@ -305,27 +307,37 @@ def main():
         print(f"[INFO] Pass 1: Active curriculum epoch set to {matched_epoch}")
 
     m_assisted, vid_assisted = run_eval_pass(
-        target_env, uenv, agent, "eval_assisted", out_dir, demo_state_tensor, obj_name
+        target_env, uenv, agent,
+        metric_prefix="eval/assisted",
+        file_tag="assisted",
+        out_dir=out_dir,
+        demo_state_tensor=demo_state_tensor,
+        obj_name=obj_name
     )
     log_payload.update(m_assisted)
     if vid_assisted:
         fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
-        log_payload["eval_assisted/video"] = wandb.Video(vid_assisted, fps=fps, format="mp4", caption=f"Assisted Step {args.step}")
+        log_payload["eval/assisted/video"] = wandb.Video(vid_assisted, fps=fps, format="mp4", caption=f"Assisted Step {args.step}")
 
-    # --- PASS 2: UNASSISTED EVALUATION ---
+    # PASS 2: UNASSISTED EVALUATION (eval/* benchmark)
     if target_obj is not None and getattr(target_obj, "actuated", False):
         target_obj.set_joint_gains(0.0, 0.0, force_range=0.0)
         print("[INFO] Pass 2: Object gains zeroed out for unassisted physics.")
 
     m_unassisted, vid_unassisted = run_eval_pass(
-        target_env, uenv, agent, "eval_unassisted", out_dir, demo_state_tensor, obj_name
+        target_env, uenv, agent,
+        metric_prefix="eval",
+        file_tag="unassisted",
+        out_dir=out_dir,
+        demo_state_tensor=demo_state_tensor,
+        obj_name=obj_name
     )
     log_payload.update(m_unassisted)
     if vid_unassisted:
         fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
-        log_payload["eval_unassisted/video"] = wandb.Video(vid_unassisted, fps=fps, format="mp4", caption=f"Unassisted Step {args.step}")
+        log_payload["eval/video"] = wandb.Video(vid_unassisted, fps=fps, format="mp4", caption=f"Benchmark Step {args.step}")
 
-    # --- WANDB LOGGING ---
+    # WANDB LOGGING
     if args.wandb_run_id:
         print(f"[INFO] Logging results to WandB run: {args.wandb_run_id}...")
         wandb.init(id=args.wandb_run_id, project=args.project, entity=args.entity, resume="allow")
@@ -334,7 +346,8 @@ def main():
             log_payload["checkpoint_step"] = args.step
             log_payload["global/env_step"] = env_step_num
 
-        wandb.log(log_payload, step=env_step_num)
+        # Resume runs without passing explicit step argument to avoid out-of-order step errors
+        wandb.log(log_payload)
         wandb.finish()
 
     target_env.close()

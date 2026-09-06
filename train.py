@@ -158,7 +158,24 @@ def run(args: argparse.Namespace) -> None:
     assert getattr(base_env, "curriculum", None) is not None, (
         "\n\n[FATAL] Training aborted at Step 0: base_env.curriculum is None!\n"
     )
-    # =========================================================================
+    import wandb
+
+    # Initialize a persistent WandB table for transition milestones
+    curriculum_history_table = wandb.Table(
+        columns=[
+            "Step",
+            "Epoch",
+            "kp",
+            "kv",
+            "fr",
+            "kp_lower",
+            "kv_lower",
+            "fr_lower",
+            "Task Rew",
+            "Ep Len",
+        ]
+    )
+    last_logged_gains = None
 
     for interaction_step in tqdm.tqdm(range(1, int(cfg.num_interaction_steps + 1)), smoothing=0.1, mininterval=0.5):
         # 1. Update Dexmachina Curriculum
@@ -250,14 +267,89 @@ def run(args: argparse.Namespace) -> None:
             if cfg.logging_per_interaction_step and interaction_step % cfg.logging_per_interaction_step == 0:
                 curriculum_logs = {}
 
-                # Read the active curriculum gains directly from the controller
                 if hasattr(base_env, "curriculum") and base_env.curriculum is not None:
-                    curr_gains = base_env.curriculum.get_current_gains()
-                    for k, v in curr_gains.items():
-                        curriculum_logs[f"env/{k}"] = float(v.mean().item() if hasattr(v, "mean") else v)
+                    curr = base_env.curriculum
 
-                # Log the actual epoch seen by the curriculum controller
-                curriculum_logs["env/curriculum_epoch"] = epoch
+                    # 1. Populate current gain parameters (Scalar plots)
+                    curr_gains = curr.get_current_gains()
+                    raw_gains = {}
+                    for k, v in curr_gains.items():
+                        val = float(v.mean().item() if hasattr(v, "mean") else v)
+                        curriculum_logs[f"env/{k}"] = val
+                        raw_gains[k] = val
+
+                    # 2. Populate pre-registered curriculum progress metrics
+                    curriculum_logs["env/curriculum_epoch"] = epoch
+                    curr_step = getattr(
+                        curr,
+                        "curriculum_step",
+                        getattr(curr, "decay_step", getattr(curr, "step", None)),
+                    )
+                    if curr_step is not None:
+                        curriculum_logs["env/curriculum_step"] = float(curr_step)
+
+                    # 3. Reward gradients
+                    if hasattr(curr, "task_grad"):
+                        curriculum_logs["env/grad/task"] = float(curr.task_grad)
+                    elif hasattr(curr, "grads") and isinstance(curr.grads, dict):
+                        for g_name in ["task", "bc", "con", "imi"]:
+                            if g_name in curr.grads:
+                                curriculum_logs[f"env/grad/{g_name}"] = float(curr.grads[g_name])
+
+                    # 4. Gating thresholds
+                    rolling_task_rew = (
+                        float(np.mean(curr.task_rew_deque))
+                        if hasattr(curr, "task_rew_deque") and len(curr.task_rew_deque) > 0
+                        else 0.0
+                    )
+                    rolling_ep_len = (
+                        float(np.mean(curr.ep_lens_deque))
+                        if hasattr(curr, "ep_lens_deque") and len(curr.ep_lens_deque) > 0
+                        else 0.0
+                    )
+
+                    if hasattr(curr, "task_rew_deque") and len(curr.task_rew_deque) > 0:
+                        curriculum_logs["env/curriculum_rolling_task_rew"] = rolling_task_rew
+                    if hasattr(curr, "ep_lens_deque") and len(curr.ep_lens_deque) > 0:
+                        curriculum_logs["env/curriculum_rolling_ep_len"] = rolling_ep_len
+
+                    # 5. Check for Curriculum Update Event
+                    if last_logged_gains is None:
+                        last_logged_gains = raw_gains.copy()
+                    elif raw_gains != last_logged_gains:
+                        # Terminal Table Output
+                        print("\n" + "=" * 62)
+                        print(
+                            f" [CURRICULUM UPDATE DETECTED] Epoch {epoch} | Step"
+                            f" {interaction_step}"
+                        )
+                        print("=" * 62)
+                        print(f"| {'Parameter':<18} | {'Previous':<18} | {'New Value':<18} |")
+                        print(f"|{'-' * 20}|{'-' * 20}|{'-' * 20}|")
+                        for k in raw_gains:
+                            prev_v = f"{last_logged_gains.get(k, 0.0):.4f}"
+                            new_v = f"{raw_gains[k]:.4f}"
+                            print(f"| {k:<18} | {prev_v:<18} | {new_v:<18} |")
+                        print("=" * 62 + "\n")
+
+                        # WandB Table Logging
+                        curriculum_history_table.add_data(
+                            interaction_step,
+                            epoch,
+                            raw_gains.get("kp", 0.0),
+                            raw_gains.get("kv", 0.0),
+                            raw_gains.get("fr", 0.0),
+                            raw_gains.get("kp_lower", 0.0),
+                            raw_gains.get("kv_lower", 0.0),
+                            raw_gains.get("fr_lower", 0.0),
+                            rolling_task_rew,
+                            rolling_ep_len,
+                        )
+                        wandb.log(
+                            {"curriculum/update_table": curriculum_history_table}, step=env_step
+                        )
+
+                        last_logged_gains = raw_gains.copy()
 
                 logger.update_metric(**curriculum_logs)
                 logger.log_metric(step=env_step)
