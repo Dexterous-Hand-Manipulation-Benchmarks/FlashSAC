@@ -181,7 +181,8 @@ def run(args: argparse.Namespace) -> None:
             actions = train_env.action_space.sample()
 
         assert actions is not None
-        actions = np.array(actions)
+        if not isinstance(actions, torch.Tensor):
+            actions = torch.as_tensor(actions, device=observations.device, dtype=torch.float32)
 
         next_observations, rewards, terminateds, truncateds, env_infos = train_env.step(actions)
 
