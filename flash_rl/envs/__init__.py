@@ -130,6 +130,12 @@ def create_envs(
             if "hand" in hydra_kwargs:
                 args.hand = hydra_kwargs["hand"]
 
+            # Forward actuation/curriculum flags from Hydra kwargs to Dexmachina args
+            args.actuate_object = hydra_kwargs.get(
+                "actuate_object",
+                hydra_kwargs.get("curriculum", True)
+            )
+
             # Explicitly enforce retarget_name to match training (defaults to 'para')
             args.retarget_name = hydra_kwargs.get("retarget_name", kwargs.get("retarget_name", "para"))
 

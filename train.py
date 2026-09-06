@@ -141,14 +141,33 @@ def run(args: argparse.Namespace) -> None:
 
     current_epoch = -1
     max_epochs = 5000
+
     base_env = getattr(train_env, "env", getattr(train_env, "base_env", train_env))
+    target_obj = getattr(base_env, "object", None)
+
+    print("\n" + "=" * 60)
+    print("[PRE-FLIGHT CHECK] Verifying Curriculum State:")
+    print(f"  -> Object Actuated:       {getattr(target_obj, 'actuated', False)}")
+    print(f"  -> use_curriculum Flag:   {getattr(base_env, 'use_curriculum', False)}")
+    print(f"  -> Curriculum Controller: {type(getattr(base_env, 'curriculum', None))}")
+    print("=" * 60 + "\n")
+
+    assert getattr(base_env, "use_curriculum", False) is True, (
+        "\n\n[FATAL] Training aborted at Step 0: base_env.use_curriculum is FALSE!\n"
+    )
+    assert getattr(base_env, "curriculum", None) is not None, (
+        "\n\n[FATAL] Training aborted at Step 0: base_env.curriculum is None!\n"
+    )
+    # =========================================================================
 
     for interaction_step in tqdm.tqdm(range(1, int(cfg.num_interaction_steps + 1)), smoothing=0.1, mininterval=0.5):
         # 1. Update Dexmachina Curriculum
         if hasattr(base_env, "set_curriculum"):
             epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
             if epoch > current_epoch:
-                base_env.set_curriculum(epoch)
+                res = base_env.set_curriculum(epoch)
+                if epoch <= 2:
+                    print(f"[CURRICULUM ACTIVE] Advanced to Epoch {epoch} (reset_tracker={res})")
                 current_epoch = epoch
         else:
             raise NotImplementedError("Tried to set curriculum, curriculum not implemented.")
@@ -226,32 +245,18 @@ def run(args: argparse.Namespace) -> None:
                 video_info = record_video(agent, record_env, cfg.num_record_episodes, cfg.env.env_type)
                 logger.update_metric(**video_info)
 
-
             # logging
             if cfg.logging_per_interaction_step and interaction_step % cfg.logging_per_interaction_step == 0:
                 curriculum_logs = {}
 
+                # Read the active curriculum gains directly from the controller
+                if hasattr(base_env, "curriculum") and base_env.curriculum is not None:
+                    curr_gains = base_env.curriculum.get_current_gains()
+                    for k, v in curr_gains.items():
+                        curriculum_logs[f"env/{k}"] = float(v.mean().item() if hasattr(v, "mean") else v)
 
-                if hasattr(base_env, "objects") and len(getattr(base_env, "object_names", [])) > 0:
-                    target_obj = base_env.objects[base_env.object_names[0]]
-
-                    # Read the exact properties revealed by the crash dump
-                    if hasattr(target_obj, "kp") and hasattr(target_obj, "kv"):
-                        kp_val = target_obj.kp
-                        kv_val = target_obj.kv
-
-
-                        # Handle potential GPU tensors or raw floats
-                        curriculum_logs["env/kp"] = float(
-                            kp_val.mean().item() if hasattr(kp_val, "mean") else np.mean(kp_val))
-                        curriculum_logs["env/kv"] = float(
-                            kv_val.mean().item() if hasattr(kv_val, "mean") else np.mean(kv_val))
-
-                        # Grab lower bounds directly from the Hydra config to draw reference lines
-                        curriculum_logs["env/kp_lower"] = float(cfg.env.get("kp_lower", 80.0))
-                        curriculum_logs["env/kv_lower"] = float(cfg.env.get("kv_lower", 5.0))
-
-                curriculum_logs["env/curriculum_step"] = interaction_step
+                # Log the actual epoch seen by the curriculum controller
+                curriculum_logs["env/curriculum_epoch"] = epoch
 
                 logger.update_metric(**curriculum_logs)
                 logger.log_metric(step=env_step)
