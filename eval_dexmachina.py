@@ -369,6 +369,7 @@ def main():
             seed=int(getattr(cfg, "seed", 0)),
             num_train_envs=int(training_num_envs),
             num_eval_envs=1,
+            is_eval=True,
         )
 
         wandb.init(id=args.wandb_run_id, project=args.project, entity=args.entity, resume="allow")
