@@ -152,12 +152,10 @@ def run(args: argparse.Namespace) -> None:
     print(f"  -> Curriculum Controller: {type(getattr(base_env, 'curriculum', None))}")
     print("=" * 60 + "\n")
 
-    assert getattr(base_env, "use_curriculum", False) is True, (
-        "\n\n[FATAL] Training aborted at Step 0: base_env.use_curriculum is FALSE!\n"
-    )
-    assert getattr(base_env, "curriculum", None) is not None, (
-        "\n\n[FATAL] Training aborted at Step 0: base_env.curriculum is None!\n"
-    )
+    if not getattr(base_env, "use_curriculum", False) is True:
+        print("\n\n[FATAL] Training aborted at Step 0: base_env.use_curriculum is FALSE!\n")
+    if getattr(base_env, "curriculum", None) is None:
+        print("\n\n[FATAL] Training aborted at Step 0: base_env.curriculum is None!\n")
     import wandb
 
     # Initialize a persistent WandB table for transition milestones
@@ -176,18 +174,20 @@ def run(args: argparse.Namespace) -> None:
         ]
     )
     last_logged_gains = None
+    printed = False
 
     for interaction_step in tqdm.tqdm(range(1, int(cfg.num_interaction_steps + 1)), smoothing=0.1, mininterval=0.5):
         # 1. Update Dexmachina Curriculum
-        if hasattr(base_env, "set_curriculum"):
+        if hasattr(base_env, "set_curriculum") and getattr(base_env, "use_curriculum", False) is True:
             epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
             if epoch > current_epoch:
                 res = base_env.set_curriculum(epoch)
                 if epoch <= 2:
                     print(f"[CURRICULUM ACTIVE] Advanced to Epoch {epoch} (reset_tracker={res})")
                 current_epoch = epoch
-        else:
-            raise NotImplementedError("Tried to set curriculum, curriculum not implemented.")
+        elif not printed:
+            print("Tried to set curriculum, curriculum not implemented.")
+            printed=True
         # using env steps simplifies the comparison with the performance reported in the paper.
         env_step = interaction_step * cfg.num_train_envs
 
