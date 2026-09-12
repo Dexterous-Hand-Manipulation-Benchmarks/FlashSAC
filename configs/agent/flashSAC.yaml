@@ -54,3 +54,11 @@ use_amp: true
 
 load_optimizer: true
 load_reward_normalizer: true
+
+# === Dexmachina Ablations & Enhancements ===
+bootstrap_on_timeout: true
+use_effective_gamma: true
+actor_init_std: 0.3
+independent_env_noise: true
+target_entropy_mode: 'sac_heuristic'
+normalize_observation: true

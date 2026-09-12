@@ -231,9 +231,13 @@ def run(args: argparse.Namespace) -> None:
         if "episode_info" in env_infos:
             logger.update_metric(**env_infos["episode_info"])
 
-        # Treat truncations as hard terminations to prevent bootstrapping on the false reset observation
-        safe_terminateds = terminateds | truncateds
-        safe_truncateds = torch.zeros_like(truncateds)
+        if getattr(cfg.agent, "bootstrap_on_timeout", True):
+            safe_terminateds = terminateds.clone()
+            safe_truncateds = truncateds.clone()
+        else:
+            # Treat truncations as hard terminations to prevent bootstrapping (legacy ablation)
+            safe_terminateds = terminateds | truncateds
+            safe_truncateds = torch.zeros_like(truncateds)
 
         transition = {
             "observation": observations,

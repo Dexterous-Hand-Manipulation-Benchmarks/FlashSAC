@@ -1,4 +1,5 @@
 import math
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -22,12 +23,13 @@ class FlashSACActor(nn.Module):
         input_dim: int,
         hidden_dim: int,
         action_dim: int,
+        init_std: Optional[float] = None,
     ):
         super().__init__()
         self.embedder = FlashSACEmbedder(input_dim=input_dim, hidden_dim=hidden_dim)
         self.encoder = nn.ModuleList([FlashSACBlock(hidden_dim) for _ in range(num_blocks)])
         self.post_norm = UnitRMSNorm(hidden_dim)
-        self.predictor = NormalTanhPolicy(hidden_dim=hidden_dim, action_dim=action_dim)
+        self.predictor = NormalTanhPolicy(hidden_dim=hidden_dim, action_dim=action_dim, init_std=init_std)
 
     def get_mean_and_std(
         self,
