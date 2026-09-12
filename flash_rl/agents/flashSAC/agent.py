@@ -20,6 +20,7 @@ from flash_rl.agents.flashSAC.update import (
     update_target_network,
     update_temperature,
 )
+from flash_rl.agents.utils.empirical_normalization import EmpiricalNormalization
 from flash_rl.agents.utils.network import Network
 from flash_rl.agents.utils.reward_normalization import RewardNormalizer
 from flash_rl.agents.utils.scheduler import warmup_cosine_decay_scheduler
@@ -65,7 +66,7 @@ class FlashSACConfig:
 
     temp_initial_value: float
     temp_target_sigma: float
-    temp_target_entropy: float
+    temp_target_entropy: Optional[float]
 
     gamma: float
     n_step: int
@@ -76,6 +77,14 @@ class FlashSACConfig:
 
     load_optimizer: bool
     load_reward_normalizer: bool
+
+    # Dexmachina ablations & enhancements
+    bootstrap_on_timeout: bool
+    use_effective_gamma: bool
+    actor_init_std: Optional[float]
+    independent_env_noise: bool
+    target_entropy_mode: str
+    normalize_observation: bool
 
 
 def _init_flashsac_networks(
@@ -100,6 +109,7 @@ def _init_flashsac_networks(
         input_dim=actor_observation_dim,
         hidden_dim=cfg.actor_hidden_dim,
         action_dim=action_dim,
+        init_std=cfg.actor_init_std,
     ).to(device)
 
     use_fused = device.type == "cuda" and torch.cuda.is_available()
@@ -220,6 +230,17 @@ def _sample_integer_from_cdf(cdf: torch.Tensor) -> torch.Tensor:
     return (idx + 1).to(torch.int32)
 
 
+@torch.compile
+def _sample_integer_from_cdf_batch(cdf: torch.Tensor, batch_size: int) -> torch.Tensor:
+    """
+    Sample integers from the given CDF for each batch element.
+    Returns a (batch_size, 1) int32 tensor.
+    """
+    u = torch.rand((batch_size, 1), device=cdf.device)
+    idx = torch.argmax((u < cdf).to(torch.int32), dim=-1, keepdim=True)
+    return (idx + 1).to(torch.int32)
+
+
 def _sample_flashsac_actions(
     actor: Network,
     noise: torch.Tensor,
@@ -245,7 +266,10 @@ def _sample_flashsac_actions(
     reinit = (cur_count == 0) | (cur_count >= cur_n)
 
     new_noise = torch.randn_like(mean)
-    new_n = _sample_integer_from_cdf(zeta_cdf)
+    if cur_n.ndim > 0:
+        new_n = _sample_integer_from_cdf_batch(zeta_cdf, mean.shape[0])
+    else:
+        new_n = _sample_integer_from_cdf(zeta_cdf)
 
     noise = torch.where(reinit, new_noise, noise)
     cur_n = torch.where(reinit, new_n, cur_n)
@@ -352,7 +376,12 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         else:
             self._actor_observation_dim = self._critic_observation_dim
 
-        temp_target_entropy = 0.5 * self._action_dim * math.log(2 * math.pi * math.e * cfg.temp_target_sigma**2)
+        if cfg.temp_target_entropy is not None:
+            temp_target_entropy = float(cfg.temp_target_entropy)
+        elif cfg.target_entropy_mode == "sac_heuristic":
+            temp_target_entropy = -float(self._action_dim)
+        else:
+            temp_target_entropy = 0.5 * self._action_dim * math.log(2 * math.pi * math.e * cfg.temp_target_sigma**2)
         compile_mode = _resolve_compile_mode(cfg.compile_mode)
         cfg = replace(cfg, temp_target_entropy=temp_target_entropy, compile_mode=compile_mode)
 
@@ -399,6 +428,20 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         action_shape = tuple(action_space.shape) if action_space.shape is not None else ()
         self._cached_noise = torch.randn(action_shape, device=self._device)
 
+        # Observation normalizer
+        self.obs_normalizer: Optional[EmpiricalNormalization] = None
+        self.critic_obs_normalizer: Optional[EmpiricalNormalization] = None
+        if self._cfg.normalize_observation:
+            self.obs_normalizer = EmpiricalNormalization(
+                shape=self._actor_observation_dim, device=self._device
+            )
+            if self._cfg.asymmetric_observation:
+                self.critic_obs_normalizer = EmpiricalNormalization(
+                    shape=self._critic_observation_dim, device=self._device
+                )
+            else:
+                self.critic_obs_normalizer = self.obs_normalizer
+
         # Reward normalizer
         self.reward_normalizer = None
         if self._cfg.normalize_reward:
@@ -437,6 +480,16 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             observations = observations[:, : self._actor_observation_dim]
 
         observations = torch.as_tensor(observations, dtype=torch.float32).to(self._device)
+
+        if self.obs_normalizer is not None:
+            observations = self.obs_normalizer(observations, update=training)
+
+        if training and self._cfg.independent_env_noise:
+            B = observations.shape[0]
+            if self._cur_noise_repeat_n.ndim == 0 or self._cur_noise_repeat_n.shape[0] != B:
+                self._cur_noise_repeat_n = torch.ones((B, 1), dtype=torch.int32, device=self._device)
+                self._cur_noise_repeat_count = torch.zeros((B, 1), dtype=torch.int32, device=self._device)
+                self._cached_noise = torch.randn((B, self._action_dim), device=self._device)
 
         with torch.no_grad():
             (
@@ -478,12 +531,22 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         for k, v in batch.items():
             batch[k] = v.to(self._device, non_blocking=True)
 
+        if not self._cfg.use_effective_gamma:
+            batch.pop("effective_gamma", None)
+
         if self._cfg.asymmetric_observation:
             batch["actor_observation"] = batch["observation"][:, : self._actor_observation_dim]
             batch["actor_next_observation"] = batch["next_observation"][:, : self._actor_observation_dim]
         else:
             batch["actor_observation"] = batch["observation"]
             batch["actor_next_observation"] = batch["next_observation"]
+
+        if self.obs_normalizer is not None:
+            batch["actor_observation"] = self.obs_normalizer(batch["actor_observation"], update=False)
+            batch["actor_next_observation"] = self.obs_normalizer(batch["actor_next_observation"], update=False)
+            if self.critic_obs_normalizer is not None:
+                batch["observation"] = self.critic_obs_normalizer(batch["observation"], update=False)
+                batch["next_observation"] = self.critic_obs_normalizer(batch["next_observation"], update=False)
 
         if self._cfg.normalize_reward:
             assert self.reward_normalizer is not None
@@ -522,6 +585,10 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         self._temperature.save(os.path.join(path, "temperature.pt"))
         if self.reward_normalizer is not None:
             self.reward_normalizer.save(os.path.join(path, "reward_normalizer.pt"))
+        if self.obs_normalizer is not None:
+            torch.save(self.obs_normalizer.state_dict(), os.path.join(path, "obs_normalizer.pt"))
+            if self._cfg.asymmetric_observation and self.critic_obs_normalizer is not None:
+                torch.save(self.critic_obs_normalizer.state_dict(), os.path.join(path, "critic_obs_normalizer.pt"))
 
         agent_state: dict[str, Any] = {
             "update_step": self._update_step,
@@ -552,6 +619,15 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         if self._cfg.load_reward_normalizer:
             assert self.reward_normalizer is not None
             self.reward_normalizer.load(os.path.join(path, "reward_normalizer.pt"))
+
+        if self.obs_normalizer is not None:
+            obs_norm_path = os.path.join(path, "obs_normalizer.pt")
+            if os.path.exists(obs_norm_path):
+                self.obs_normalizer.load_state_dict(torch.load(obs_norm_path, map_location=self._device))
+            if self._cfg.asymmetric_observation and self.critic_obs_normalizer is not None:
+                critic_obs_norm_path = os.path.join(path, "critic_obs_normalizer.pt")
+                if os.path.exists(critic_obs_norm_path):
+                    self.critic_obs_normalizer.load_state_dict(torch.load(critic_obs_norm_path, map_location=self._device))
 
         print(f"\033[32m[FlashSAC]\033[0m Successfully loaded checkpoint from {path}.")
 

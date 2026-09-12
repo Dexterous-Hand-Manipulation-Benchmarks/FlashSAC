@@ -179,7 +179,13 @@ def create_envs(
                 if "contact_rew_weight" in rcfg_dict:
                     env_kwargs["env_cfg"]["use_contact_reward"] = float(rcfg_dict["contact_rew_weight"]) > 0
             env_kwargs['env_cfg']['use_rl_games'] = True
-            return BaseEnv(**env_kwargs)
+            env = BaseEnv(**env_kwargs)
+            if reward_cfg_overrides is not None and hasattr(env, "reward_module"):
+                for k, v in dict(reward_cfg_overrides).items():
+                    env.reward_module.cfg[k] = v
+                    if hasattr(env.reward_module, k):
+                        setattr(env.reward_module, k, v)
+            return env
 
         raw_train_env = make_dexmachina_env(num_train_envs, rl_device, kwargs, env_seed)
         train_env = GenesisFlashSACWrapper(raw_train_env, rl_device=rl_device)

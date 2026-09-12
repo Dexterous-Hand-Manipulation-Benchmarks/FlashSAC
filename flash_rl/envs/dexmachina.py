@@ -21,6 +21,30 @@ class GenesisFlashSACWrapper(gym.Env):
         self.num_actions = self.env.action_dim
         self.max_episode_steps = getattr(self.env, "max_episode_length", 200)
 
+        # Buffer to capture true pre-reset terminal observations
+        self._terminal_obs = torch.zeros(
+            (self.num_envs, self.num_obs), device=self.sim_device, dtype=torch.float32
+        )
+
+        # Intercept reset_idx to capture terminal observation before bodies/dofs reset
+        orig_reset_idx = self.env.reset_idx
+
+        def hooked_reset_idx(env_idxs):
+            if len(env_idxs) > 0:
+                with torch.no_grad():
+                    term_obs = self.env.get_observations()
+                    term_policy = term_obs["policy"] if isinstance(term_obs, dict) else term_obs
+                    if not isinstance(term_policy, torch.Tensor):
+                        term_policy = torch.tensor(term_policy, device=self.sim_device, dtype=torch.float32)
+                    else:
+                        term_policy = term_policy.to(self.sim_device, dtype=torch.float32)
+                    if torch.isnan(term_policy).any():
+                        term_policy = torch.nan_to_num(term_policy, nan=0.0, posinf=0.0, neginf=0.0)
+                    self._terminal_obs[env_idxs] = term_policy[env_idxs]
+            return orig_reset_idx(env_idxs)
+
+        self.env.reset_idx = hooked_reset_idx
+
         # Gymnasium Spaces
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.num_obs,), dtype=np.float32
@@ -40,6 +64,8 @@ class GenesisFlashSACWrapper(gym.Env):
 
         if torch.isnan(obs).any():
             obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+
+        self._terminal_obs.copy_(obs)
 
         return obs, extras
 
@@ -77,8 +103,12 @@ class GenesisFlashSACWrapper(gym.Env):
             rew = torch.nan_to_num(rew, nan=0.0, posinf=0.0, neginf=0.0)
 
         infos = {}
-        terminal_obs = extras.get("final_obs", extras.get("terminal_observation", obs)).clone()
-        infos["final_obs"] = terminal_obs
+        dones = terminated | truncated
+        non_reset_mask = ~dones
+        if non_reset_mask.any():
+            self._terminal_obs[non_reset_mask] = obs[non_reset_mask]
+
+        infos["final_obs"] = self._terminal_obs.clone()
 
         # --- High-Speed GPU Online Success & Tracking Error Metrics ---
         if hasattr(self.env, "rew_dict") and isinstance(self.env.rew_dict, dict):

@@ -89,6 +89,7 @@ class TorchUniformBuffer(BaseBuffer):
         self._rewards = torch.empty((m,), dtype=torch.float32, device=self._device, pin_memory=pin)
         self._terminateds = torch.empty((m,), dtype=torch.float32, device=self._device, pin_memory=pin)
         self._truncateds = torch.empty((m,), dtype=torch.float32, device=self._device, pin_memory=pin)
+        self._effective_gammas = torch.empty((m,), dtype=torch.float32, device=self._device, pin_memory=pin)
 
         self._n_step_transitions: deque[dict[str, Any]] = deque(maxlen=self._n_step)
         self._num_in_buffer = 0
@@ -103,7 +104,7 @@ class TorchUniformBuffer(BaseBuffer):
     def _get_n_step_prev_transition(self) -> Batch:
         """
         Processes n_step_transitions to compute the n-step return, done status,
-        and next observation. Mirrors NpyUniformBuffer._get_n_step_prev_transition exactly.
+        next observation, and dynamically adjusted effective discount factor.
         """
         n_step_prev_transition = self._n_step_transitions[0]
         curr_transition = self._n_step_transitions[-1]
@@ -131,10 +132,19 @@ class TorchUniformBuffer(BaseBuffer):
             n_step_truncated[done_mask] = truncated[done_mask]
             n_step_next_observation[done_mask] = next_observation[done_mask]
 
+        # Calculate dynamic effective steps for correct gamma discount
+        effective_n = torch.full_like(n_step_reward, float(self._n_step))
+        for n_step_idx in reversed(range(self._n_step)):
+            t = self._n_step_transitions[n_step_idx]
+            d = (t["terminated"].bool() | t["truncated"].bool())
+            effective_n = torch.where(d, torch.full_like(effective_n, float(n_step_idx + 1)), effective_n)
+        effective_gamma = torch.pow(self._gamma, effective_n)
+
         n_step_prev_transition["reward"] = n_step_reward
         n_step_prev_transition["terminated"] = n_step_terminated
         n_step_prev_transition["truncated"] = n_step_truncated
         n_step_prev_transition["next_observation"] = n_step_next_observation
+        n_step_prev_transition["effective_gamma"] = effective_gamma
 
         return cast(Batch, n_step_prev_transition)
 
@@ -159,6 +169,10 @@ class TorchUniformBuffer(BaseBuffer):
             self._rewards[idxs] = n_step_prev_transition["reward"].to(self._rewards.dtype)
             self._terminateds[idxs] = n_step_prev_transition["terminated"].to(self._terminateds.dtype)
             self._truncateds[idxs] = n_step_prev_transition["truncated"].to(self._truncateds.dtype)
+            if "effective_gamma" in n_step_prev_transition:
+                self._effective_gammas[idxs] = n_step_prev_transition["effective_gamma"].to(self._effective_gammas.dtype)
+            else:
+                self._effective_gammas[idxs] = self._gamma**self._n_step
 
             self._num_in_buffer = min(self._num_in_buffer + add_batch_size, self._max_length)
             self._current_idx = (self._current_idx + add_batch_size) % self._max_length
@@ -179,6 +193,7 @@ class TorchUniformBuffer(BaseBuffer):
         batch["terminated"] = self._terminateds[idxs]
         batch["truncated"] = self._truncateds[idxs]
         batch["next_observation"] = self._next_observations[idxs]
+        batch["effective_gamma"] = self._effective_gammas[idxs]
 
         return batch
 
@@ -197,6 +212,7 @@ class TorchUniformBuffer(BaseBuffer):
             "terminated": self._terminateds[:n],
             "truncated": self._truncateds[:n],
             "next_observation": self._next_observations[:n],
+            "effective_gamma": self._effective_gammas[:n],
             "num_in_buffer": self._num_in_buffer,
             "current_idx": self._current_idx,
         }
@@ -217,6 +233,10 @@ class TorchUniformBuffer(BaseBuffer):
         self._rewards[:n] = dataset["reward"]
         self._terminateds[:n] = dataset["terminated"]
         self._truncateds[:n] = dataset["truncated"]
+        if "effective_gamma" in dataset:
+            self._effective_gammas[:n] = dataset["effective_gamma"]
+        else:
+            self._effective_gammas[:n] = self._gamma**self._n_step
 
         self._num_in_buffer = n
         self._current_idx = dataset["current_idx"]

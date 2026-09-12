@@ -115,13 +115,21 @@ class NormalTanhPolicy(nn.Module):
         action_dim: int,
         log_std_min: float = -10.0,
         log_std_max: float = 2.0,
+        init_std: Optional[float] = None,
     ):
         super().__init__()
         self.mean_w = UnitLinear(hidden_dim, action_dim)
         self.mean_bias = nn.Parameter(torch.zeros(action_dim))
 
         self.std_w = UnitLinear(hidden_dim, action_dim)
-        self.std_bias = nn.Parameter(torch.zeros(action_dim))
+        if init_std is not None and init_std > 0:
+            target_log_std = math.log(init_std)
+            ratio = 2.0 * (target_log_std - log_std_min) / (log_std_max - log_std_min) - 1.0
+            ratio = max(min(ratio, 0.999), -0.999)
+            raw_init = math.atanh(ratio)
+            self.std_bias = nn.Parameter(torch.full((action_dim,), raw_init, dtype=torch.float32))
+        else:
+            self.std_bias = nn.Parameter(torch.zeros(action_dim))
 
         self.log_std_min = log_std_min
         self.log_std_max = log_std_max
