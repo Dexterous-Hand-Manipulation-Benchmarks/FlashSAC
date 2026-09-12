@@ -238,7 +238,7 @@ def run(args: argparse.Namespace) -> None:
         transition = {
             "observation": observations,
             "action": actions,
-            "reward": processed_rewards,
+            "reward": rewards,
             "terminated": safe_terminateds,
             "truncated": safe_truncateds,
             "next_observation": next_buffer_observations,
