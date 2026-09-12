@@ -260,6 +260,8 @@ def run(args: argparse.Namespace) -> None:
             if cfg.evaluation_per_interaction_step and interaction_step % cfg.evaluation_per_interaction_step == 0:
                 eval_info = evaluate(agent, eval_env, cfg.num_eval_episodes, cfg.env.env_type)
                 logger.update_metric(**eval_info)
+                if eval_env is train_env:
+                    observations, env_infos = train_env.reset()
 
             # metrics
             if cfg.metrics_per_interaction_step and interaction_step % cfg.metrics_per_interaction_step == 0:
