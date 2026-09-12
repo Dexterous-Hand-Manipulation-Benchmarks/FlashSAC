@@ -195,7 +195,9 @@ def run(args: argparse.Namespace) -> None:
         if agent.can_start_training() and transition is not None:
             actions = agent.sample_actions(interaction_step, prev_transition=transition, training=True)
         else:
-            actions = train_env.action_space.sample()
+            #actions = train_env.action_space.sample()
+            # Ensure random actions for all parallel envs.
+            actions = np.array([train_env.action_space.sample() for _ in range(cfg.num_train_envs)])
 
         assert actions is not None
         if not isinstance(actions, torch.Tensor):
