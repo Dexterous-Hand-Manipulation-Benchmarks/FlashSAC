@@ -140,7 +140,7 @@ def run(args: argparse.Namespace) -> None:
     update_info = {}
 
     current_epoch = -1
-    max_epochs = 5000
+    max_epochs = 10_000
 
     base_env = getattr(train_env, "env", getattr(train_env, "base_env", train_env))
     target_obj = getattr(base_env, "object", None)
@@ -229,12 +229,16 @@ def run(args: argparse.Namespace) -> None:
         if "episode_info" in env_infos:
             logger.update_metric(**env_infos["episode_info"])
 
+        # Treat truncations as hard terminations to prevent bootstrapping on the false reset observation
+        safe_terminateds = terminateds | truncateds
+        safe_truncateds = torch.zeros_like(truncateds)
+
         transition = {
             "observation": observations,
             "action": actions,
-            "reward": rewards,
-            "terminated": terminateds,
-            "truncated": truncateds,
+            "reward": processed_rewards,
+            "terminated": safe_terminateds,
+            "truncated": safe_truncateds,
             "next_observation": next_buffer_observations,
         }
         agent.process_transition(transition)
