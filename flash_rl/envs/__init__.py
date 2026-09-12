@@ -136,6 +136,23 @@ def create_envs(
                 hydra_kwargs.get("curriculum", True)
             )
 
+            # Enforce max_epochs for curriculum schedule so zero_epoch aligns with training length
+            args.max_epochs = int(hydra_kwargs.get("max_epochs", 10000))
+
+            # Forward reward shaping configs if provided in hydra overrides
+            reward_cfg_overrides = hydra_kwargs.get("reward_cfg", None)
+            if reward_cfg_overrides is not None:
+                rcfg_dict = dict(reward_cfg_overrides)
+                for k, v in rcfg_dict.items():
+                    if hasattr(args, k):
+                        setattr(args, k, v)
+                if "obj_pos_beta" in rcfg_dict or "obj_rot_beta" in rcfg_dict or "obj_arti_beta" in rcfg_dict:
+                    args.task_rew_betas = [
+                        rcfg_dict.get("obj_pos_beta", args.task_rew_betas[0]),
+                        rcfg_dict.get("obj_rot_beta", args.task_rew_betas[1]),
+                        rcfg_dict.get("obj_arti_beta", args.task_rew_betas[2]),
+                    ]
+
             # Explicitly enforce retarget_name to match training (defaults to 'para')
             args.retarget_name = hydra_kwargs.get("retarget_name", kwargs.get("retarget_name", "para"))
 
@@ -157,6 +174,10 @@ def create_envs(
             parse_clip_string(clip_str)
 
             env_kwargs = get_all_env_cfg(args, device=device)
+            if reward_cfg_overrides is not None:
+                env_kwargs["reward_cfg"].update(dict(reward_cfg_overrides))
+                if "contact_rew_weight" in rcfg_dict:
+                    env_kwargs["env_cfg"]["use_contact_reward"] = float(rcfg_dict["contact_rew_weight"]) > 0
             env_kwargs['env_cfg']['use_rl_games'] = True
             return BaseEnv(**env_kwargs)
 

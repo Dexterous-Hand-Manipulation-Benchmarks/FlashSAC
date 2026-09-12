@@ -267,8 +267,11 @@ def main():
     cfg = hydra.compose(config_name=args.config_name, overrides=args.overrides)
     OmegaConf.resolve(cfg)
 
-    device = torch.device(args.device if torch.cuda.is_available() else "cpu")
-    train_env_scale = int(cfg.env.get("num_train_envs", 1024))
+    scale_candidate = cfg.env.get("num_train_envs", None) if hasattr(cfg, "env") else None
+    if scale_candidate is None or int(scale_candidate) <= 1:
+        train_env_scale = 1024
+    else:
+        train_env_scale = int(scale_candidate)
     if hasattr(cfg, "env"):
         cfg.env.num_train_envs = 1
         cfg.env.num_eval_envs = 1
