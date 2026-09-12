@@ -61,14 +61,21 @@ def evaluate(
                 success = infos["success"].astype("float") * (1 - dones)
                 success_once = np.logical_or(success_once, success)
 
-            if "final_info" in infos:
+            if "eval/success_5cm" in infos:
+                total_success_end_list.append(float(infos["eval/success_5cm"]))
+            elif "success_5cm" in infos:
+                total_success_end_list.append(float(infos["success_5cm"]))
+            elif "final_info" in infos:
                 for idx in range(num_envs):
                     final_info = infos["final_info"]
                     if "success" in final_info:
                         final_success = final_info["success"][idx].astype("float") * (1 - dones[idx])
                         success_end[idx] = final_success
-            else:
-                pass
+
+            if "eval/success_2cm" in infos:
+                total_success_once_list.append(float(infos["eval/success_2cm"]))
+            elif "success_2cm" in infos:
+                total_success_once_list.append(float(infos["success_2cm"]))
 
             # once an episode is done in a sub-environment, we assume it to be done.
             # also, we assume to be done whether it is terminated or truncated during evaluation.
@@ -81,15 +88,21 @@ def evaluate(
         for env_idx in range(num_envs):
             total_return_list.append(returns[env_idx])
             total_length_list.append(lengths[env_idx])
-            total_success_once_list.append(success_once[env_idx].astype("bool").astype("float"))
-            total_success_end_list.append(success_end[env_idx].astype("bool").astype("float"))
+            if not total_success_once_list:
+                total_success_once_list.append(success_once[env_idx].astype("bool").astype("float"))
+            if not total_success_end_list:
+                total_success_end_list.append(success_end[env_idx].astype("bool").astype("float"))
 
     eval_info = {
         "avg_return": float(np.mean(total_return_list)),
         "avg_length": float(np.mean(total_length_list)),
-        "avg_success_once": float(np.mean(total_success_once_list)),
-        "avg_success_end": float(np.mean(total_success_end_list)),
+        "avg_success_once": float(np.mean(total_success_once_list)) if total_success_once_list else 0.0,
+        "avg_success_end": float(np.mean(total_success_end_list)) if total_success_end_list else 0.0,
     }
+    if total_success_end_list:
+        eval_info["eval/success_5cm"] = float(np.mean(total_success_end_list))
+    if total_success_once_list:
+        eval_info["eval/success_2cm"] = float(np.mean(total_success_once_list))
 
     env.reset()
 
