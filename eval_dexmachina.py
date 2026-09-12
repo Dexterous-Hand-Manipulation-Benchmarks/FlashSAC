@@ -300,7 +300,7 @@ def main():
 
     # PASS 1: ASSISTED EVALUATION (eval/assisted/*)
     TOTAL_INTERACTION_STEPS = 48829  # 50_000_896 / 1024 envs
-    MAX_EPOCHS = 5000
+    MAX_EPOCHS = 10_000
     if hasattr(uenv, "set_curriculum") and args.step is not None:
         matched_epoch = int((args.step * MAX_EPOCHS) / TOTAL_INTERACTION_STEPS)
         uenv.set_curriculum(matched_epoch)
