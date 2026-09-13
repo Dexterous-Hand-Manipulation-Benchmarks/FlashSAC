@@ -280,6 +280,7 @@ def main():
     train_env, eval_env, _ = create_envs(**cfg.env)
     target_env = eval_env if eval_env is not None else train_env
     uenv = getattr(target_env, "env", getattr(target_env, "base_env", getattr(target_env, "unwrapped", target_env)))
+    device = torch.device(args.device)
     demo_state_tensor = get_demo_state_tensor(uenv, device)
 
     agent = create_agent(
