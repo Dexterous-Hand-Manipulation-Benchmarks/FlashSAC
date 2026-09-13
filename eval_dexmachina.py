@@ -330,7 +330,7 @@ def main():
 
     m_unassisted, vid_unassisted = run_eval_pass(
         target_env, uenv, agent,
-        metric_prefix="eval",
+        metric_prefix="eval/milestone",
         file_tag="unassisted",
         out_dir=out_dir,
         demo_state_tensor=demo_state_tensor,
