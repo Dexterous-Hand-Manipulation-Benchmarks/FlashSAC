@@ -56,11 +56,12 @@ def _compute_categorical_td_target(
 
     # target_bin_values
     target_bin_values = reward + gamma * (bin_values - actor_entropy) * (1.0 - done)
+    target_bin_values = torch.nan_to_num(target_bin_values, nan=min_v, posinf=max_v, neginf=min_v)
     target_bin_values = torch.clamp(target_bin_values, min_v, max_v)
 
     # update indices
     b = (target_bin_values - min_v) / bin_width
-    lower = torch.floor(b).long()
+    lower = torch.clamp(torch.floor(b).long(), 0, num_bins - 1)
     upper = torch.clamp(lower + 1, 0, num_bins - 1)
 
     frac = b - lower.float()
