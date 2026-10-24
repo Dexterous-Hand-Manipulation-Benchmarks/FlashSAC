@@ -29,7 +29,7 @@ class GenesisFlashSACWrapper(gym.Env):
         # Intercept reset_idx to capture terminal observation before bodies/dofs reset
         orig_reset_idx = self.env.reset_idx
 
-        def hooked_reset_idx(env_idxs):
+        def hooked_reset_idx(env_idxs, *args, **kwargs):
             if len(env_idxs) > 0:
                 with torch.no_grad():
                     term_obs = self.env.get_observations()
@@ -41,7 +41,7 @@ class GenesisFlashSACWrapper(gym.Env):
                     if torch.isnan(term_policy).any():
                         term_policy = torch.nan_to_num(term_policy, nan=0.0, posinf=0.0, neginf=0.0)
                     self._terminal_obs[env_idxs] = term_policy[env_idxs]
-            return orig_reset_idx(env_idxs)
+            return orig_reset_idx(env_idxs, *args, **kwargs)
 
         self.env.reset_idx = hooked_reset_idx
 
