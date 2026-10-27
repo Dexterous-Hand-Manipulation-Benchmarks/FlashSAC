@@ -35,14 +35,16 @@ dependencies = [
 
     # [Config 1: Ubuntu 22.04 / RTX3090,4090 / Python 3.10]
     "torch>=2.5.1 ; python_version == '3.10'",
-    "jax[cuda12]==0.4.30 ; python_version == '3.10'",
+    "jax[cuda12]==0.4.30 ; python_version == '3.10' and sys_platform == 'linux'",
+    "jax==0.4.30 ; python_version == '3.10' and sys_platform != 'linux'",
     "jaxlib==0.4.30 ; python_version == '3.10'",
     "distrax==0.1.5; python_version == '3.10'",
     "tensorflow-probability==0.24.0; python_version == '3.10'",
 
     # [Config 2: Ubuntu 24.04 / Blackwell(RTX50x0,Bx00) / Python 3.11]
     "torch==2.9.1 ; python_version == '3.11'",
-    "jax[cuda12]==0.7.1 ; python_version == '3.11'",
+    "jax[cuda12]==0.7.1 ; python_version == '3.11' and sys_platform == 'linux'",
+    "jax==0.7.1 ; python_version == '3.11' and sys_platform != 'linux'",
     "jaxlib==0.7.1 ; python_version == '3.11'",
     "distrax==0.1.7; python_version == '3.11'",
     "orbax-checkpoint==0.11.30; python_version == '3.11'",
