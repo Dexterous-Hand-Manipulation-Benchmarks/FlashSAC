@@ -26,14 +26,6 @@ def _safe_gs_init(*args, **kwargs):
 
 gs.init = _safe_gs_init
 
-# Workspace paths
-base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-flashsac_dir = os.path.join(base_dir, "FlashSAC")
-dexmachina_dir = os.path.join(base_dir, "dexmachina")
-for p in [base_dir, flashsac_dir, dexmachina_dir, os.path.dirname(__file__)]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
 from flash_rl.agents import create_agent
 from flash_rl.envs import create_envs
 from dexmachina.envs.base_env import BaseEnv
@@ -256,7 +248,7 @@ def main():
     parser.add_argument("--config_name", type=str, default="flashSAC_base")
     parser.add_argument("--step", type=int, default=None)
     parser.add_argument("--project", type=str, default="dexmachina_clean")
-    parser.add_argument("--entity", type=str, default="schrapsi-kit")
+    parser.add_argument("--entity", type=str, default=None, help="W&B entity (default: $WANDB_ENTITY / your W&B default)")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--overrides", action="append", default=[])
     args = parser.parse_args()

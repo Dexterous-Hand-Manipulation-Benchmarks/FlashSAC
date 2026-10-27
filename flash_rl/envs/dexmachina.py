@@ -182,6 +182,78 @@ class GenesisFlashSACWrapper(gym.Env):
             self.env.close()
 
 
+def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
+    """Build a Dexmachina BaseEnv from FlashSAC's Hydra env kwargs."""
+    from dexmachina.envs.base_env import BaseEnv
+    from dexmachina.envs.constructors import get_common_argparser, get_all_env_cfg, parse_clip_string
+
+    kwargs = hydra_kwargs
+    parser = get_common_argparser()
+    args, _ = parser.parse_known_args([])
+    args.num_envs = num_envs
+    args.seed = seed
+
+    if "hand" in hydra_kwargs:
+        args.hand = hydra_kwargs["hand"]
+
+    # Forward actuation/curriculum flags from Hydra kwargs to Dexmachina args
+    args.actuate_object = hydra_kwargs.get(
+        "actuate_object",
+        hydra_kwargs.get("curriculum", True)
+    )
+
+    # Enforce max_epochs for curriculum schedule so zero_epoch aligns with training length
+    args.max_epochs = int(hydra_kwargs.get("max_epochs", 10000))
+
+    # Forward reward shaping configs if provided in hydra overrides
+    reward_cfg_overrides = hydra_kwargs.get("reward_cfg", None)
+    if reward_cfg_overrides is not None:
+        rcfg_dict = dict(reward_cfg_overrides)
+        for k, v in rcfg_dict.items():
+            if hasattr(args, k):
+                setattr(args, k, v)
+        if "obj_pos_beta" in rcfg_dict or "obj_rot_beta" in rcfg_dict or "obj_arti_beta" in rcfg_dict:
+            args.task_rew_betas = [
+                rcfg_dict.get("obj_pos_beta", args.task_rew_betas[0]),
+                rcfg_dict.get("obj_rot_beta", args.task_rew_betas[1]),
+                rcfg_dict.get("obj_arti_beta", args.task_rew_betas[2]),
+            ]
+
+    # Explicitly enforce retarget_name to match training (defaults to 'para')
+    args.retarget_name = hydra_kwargs.get("retarget_name", kwargs.get("retarget_name", "para"))
+
+    raw_clip = hydra_kwargs.get("clip", kwargs.get("clip", env_name))
+    clip_str = str(raw_clip)
+
+    if "box" in clip_str or "box" in str(env_name):
+        clip_str = "box-30-230-s01-01"
+    elif "mixer" in clip_str or "mixer" in str(env_name):
+        clip_str = "mixer-0-150-s01-01"
+    else:
+        parts = clip_str.split("-")
+        if len(parts) == 3:
+            clip_str = f"{clip_str}-s01-01"
+        elif len(parts) != 5:
+            clip_str = "box-30-230-s01-01"
+
+    args.clip = clip_str
+    parse_clip_string(clip_str)
+
+    env_kwargs = get_all_env_cfg(args, device=device)
+    if reward_cfg_overrides is not None:
+        env_kwargs["reward_cfg"].update(dict(reward_cfg_overrides))
+        if "contact_rew_weight" in rcfg_dict:
+            env_kwargs["env_cfg"]["use_contact_reward"] = float(rcfg_dict["contact_rew_weight"]) > 0
+    env_kwargs['env_cfg']['use_rl_games'] = True
+    env = BaseEnv(**env_kwargs)
+    if reward_cfg_overrides is not None and hasattr(env, "reward_module"):
+        for k, v in dict(reward_cfg_overrides).items():
+            env.reward_module.cfg[k] = v
+            if hasattr(env.reward_module, k):
+                setattr(env.reward_module, k, v)
+    return env
+
+
 # Backwards Compatibility Aliases
 DexmachinaWrapper = GenesisFlashSACWrapper
 DexmachinaEnv = GenesisFlashSACWrapper

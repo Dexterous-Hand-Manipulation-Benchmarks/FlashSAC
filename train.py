@@ -11,14 +11,6 @@ os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_paralleli
 # Force global initialization of Genesis to prevent local circular import crashes
 import genesis as gs
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
-LOGGING_DIR = os.path.join(PROJECT_ROOT, "logging")
-
-for p in [LOGGING_DIR, PROJECT_ROOT, SCRIPT_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
 
 import argparse
 import random
@@ -36,7 +28,10 @@ from flash_rl.common import create_logger
 from flash_rl.envs import create_envs
 from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import Tensor
-from wandb_logger import UniversalLogger
+try:  # unified W&B logging when run from the dexhand-bench umbrella repo
+    from dexhand_bench.wandb_logger import UniversalLogger
+except ImportError:
+    UniversalLogger = None
 
 
 def run(args: argparse.Namespace) -> None:
@@ -62,14 +57,15 @@ def run(args: argparse.Namespace) -> None:
     num_eval = getattr(cfg, "num_eval_envs", None) or getattr(cfg, "num_eval_episodes", None)
     seed = getattr(cfg, "seed", 0)
 
-    UniversalLogger.install(
-        algo="flash_sac",
-        hand=str(hand_name),
-        clip=str(clip_name),
-        seed=int(seed),
-        num_train_envs=int(num_train),
-        num_eval_envs=int(num_eval) if num_eval is not None else None,
-    )
+    if UniversalLogger is not None:
+        UniversalLogger.install(
+            algo="flash_sac",
+            hand=str(hand_name),
+            clip=str(clip_name),
+            seed=int(seed),
+            num_train_envs=int(num_train),
+            num_eval_envs=int(num_eval) if num_eval is not None else None,
+        )
     # -----------------------------------
 
     ###############################

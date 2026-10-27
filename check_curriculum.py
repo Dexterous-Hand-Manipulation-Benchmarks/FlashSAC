@@ -5,12 +5,6 @@ import sys
 import genesis as gs
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
-DEXMACHINA_DIR = os.path.join(PROJECT_ROOT, "dexmachina")
-
-for p in [SCRIPT_DIR, PROJECT_ROOT, DEXMACHINA_DIR]:
-    if p not in sys.path:
-        sys.path.insert(0, p)
 
 import hydra
 import torch

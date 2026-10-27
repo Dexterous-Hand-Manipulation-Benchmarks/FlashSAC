@@ -3,7 +3,7 @@
 ##################################################################################
 
 project_name: 'dexmachina'
-entity_name: 'schrapsi-kit'
+entity_name: null  # null: W&B uses $WANDB_ENTITY or your default entity
 group_name: 'FlashSAC'
 exp_name: 'test'
 seed: 0

@@ -108,86 +108,14 @@ def create_envs(
         record_env = train_env
 
     elif env_type == "dexmachina":
-        import sys
-        import os
-        sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../")))
-        from envs.FlashSAC.dexmachina_wrapper import GenesisFlashSACWrapper
-
         import genesis as gs
-        from dexmachina.envs.base_env import BaseEnv
-        from dexmachina.envs.constructors import get_common_argparser, get_all_env_cfg, parse_clip_string
+        from flash_rl.envs.dexmachina import GenesisFlashSACWrapper, make_dexmachina_env
 
-        gs.init(backend=gs.gpu, logging_level='warning')
         rl_device = kwargs.get("rl_device", "cuda:0")
+        gs.init(backend=gs.cpu if str(rl_device).startswith("cpu") else gs.gpu, logging_level='warning')
         env_seed = kwargs.get("seed", 0)
 
-        def make_dexmachina_env(num_envs, device, hydra_kwargs, seed):
-            parser = get_common_argparser()
-            args, _ = parser.parse_known_args([])
-            args.num_envs = num_envs
-            args.seed = seed
-
-            if "hand" in hydra_kwargs:
-                args.hand = hydra_kwargs["hand"]
-
-            # Forward actuation/curriculum flags from Hydra kwargs to Dexmachina args
-            args.actuate_object = hydra_kwargs.get(
-                "actuate_object",
-                hydra_kwargs.get("curriculum", True)
-            )
-
-            # Enforce max_epochs for curriculum schedule so zero_epoch aligns with training length
-            args.max_epochs = int(hydra_kwargs.get("max_epochs", 10000))
-
-            # Forward reward shaping configs if provided in hydra overrides
-            reward_cfg_overrides = hydra_kwargs.get("reward_cfg", None)
-            if reward_cfg_overrides is not None:
-                rcfg_dict = dict(reward_cfg_overrides)
-                for k, v in rcfg_dict.items():
-                    if hasattr(args, k):
-                        setattr(args, k, v)
-                if "obj_pos_beta" in rcfg_dict or "obj_rot_beta" in rcfg_dict or "obj_arti_beta" in rcfg_dict:
-                    args.task_rew_betas = [
-                        rcfg_dict.get("obj_pos_beta", args.task_rew_betas[0]),
-                        rcfg_dict.get("obj_rot_beta", args.task_rew_betas[1]),
-                        rcfg_dict.get("obj_arti_beta", args.task_rew_betas[2]),
-                    ]
-
-            # Explicitly enforce retarget_name to match training (defaults to 'para')
-            args.retarget_name = hydra_kwargs.get("retarget_name", kwargs.get("retarget_name", "para"))
-
-            raw_clip = hydra_kwargs.get("clip", kwargs.get("clip", env_name))
-            clip_str = str(raw_clip)
-
-            if "box" in clip_str or "box" in str(env_name):
-                clip_str = "box-30-230-s01-01"
-            elif "mixer" in clip_str or "mixer" in str(env_name):
-                clip_str = "mixer-0-150-s01-01"
-            else:
-                parts = clip_str.split("-")
-                if len(parts) == 3:
-                    clip_str = f"{clip_str}-s01-01"
-                elif len(parts) != 5:
-                    clip_str = "box-30-230-s01-01"
-
-            args.clip = clip_str
-            parse_clip_string(clip_str)
-
-            env_kwargs = get_all_env_cfg(args, device=device)
-            if reward_cfg_overrides is not None:
-                env_kwargs["reward_cfg"].update(dict(reward_cfg_overrides))
-                if "contact_rew_weight" in rcfg_dict:
-                    env_kwargs["env_cfg"]["use_contact_reward"] = float(rcfg_dict["contact_rew_weight"]) > 0
-            env_kwargs['env_cfg']['use_rl_games'] = True
-            env = BaseEnv(**env_kwargs)
-            if reward_cfg_overrides is not None and hasattr(env, "reward_module"):
-                for k, v in dict(reward_cfg_overrides).items():
-                    env.reward_module.cfg[k] = v
-                    if hasattr(env.reward_module, k):
-                        setattr(env.reward_module, k, v)
-            return env
-
-        raw_train_env = make_dexmachina_env(num_train_envs, rl_device, kwargs, env_seed)
+        raw_train_env = make_dexmachina_env(num_train_envs, rl_device, kwargs, env_seed, env_name)
         train_env = GenesisFlashSACWrapper(raw_train_env, rl_device=rl_device)
         eval_env = train_env
         record_env = train_env
