@@ -30,7 +30,10 @@ from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import Tensor
 try:  # unified W&B logging when run from the dexhand-bench umbrella repo
     from dexhand_bench.wandb_logger import UniversalLogger
-except ImportError:
+except ModuleNotFoundError as e:
+    if e.name != "dexhand_bench":  # installed but broken: fail instead of logging unstandardised metrics
+        raise
+    print("[INFO] dexhand_bench not installed: unified W&B metric logging disabled")
     UniversalLogger = None
 
 
