@@ -210,7 +210,6 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
     try:
         from dexmachina.eval.compute_add import compute_for_eval
         stats_path = os.path.join(out_dir, f"{file_tag}_add_stats.json")
-        cache_sub_verts = os.path.join(dexmachina_dir, "dexmachina", "eval", "sub_verts")
         compute_for_eval(
             eval_path=out_file,
             obj_name=obj_name,
@@ -218,7 +217,7 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
             stats_name=f"{file_tag}_add_stats.json",
             overwrite=True,
             output_cache=False,
-            cache_dir=cache_sub_verts if os.path.exists(cache_sub_verts) else "dexmachina/eval/sub_verts",
+            cache_dir=None,
         )
         if os.path.exists(stats_path):
             with open(stats_path, "r") as f:
