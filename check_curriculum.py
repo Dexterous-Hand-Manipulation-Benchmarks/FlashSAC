@@ -1,14 +1,13 @@
 import os
-import sys
 
-# 1. Force top-level initialization of Genesis to prevent circular import crashes
-import genesis as gs
+# Imported first on purpose: training misbehaved without it (cause not pinned down).
+import genesis as gs  # noqa: F401 (unused on purpose)
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 import hydra
-import torch
 from omegaconf import OmegaConf
+
 from flash_rl.envs import create_envs
 
 OmegaConf.register_new_resolver("eval", lambda s: eval(s), replace=True)

@@ -1,14 +1,15 @@
-import os
-import sys
 import argparse
-from collections import defaultdict
 import json
+import os
+from collections import defaultdict
+
+import hydra
 import numpy as np
 import torch
 import wandb
-import hydra
-from omegaconf import OmegaConf, DictConfig
+from omegaconf import OmegaConf
 
+# isort: split
 # Force global initialization of Genesis and make gs.init idempotent
 import genesis as gs
 
@@ -26,9 +27,10 @@ def _safe_gs_init(*args, **kwargs):
 
 gs.init = _safe_gs_init
 
+from dexmachina.envs.base_env import BaseEnv
+
 from flash_rl.agents import create_agent
 from flash_rl.envs import create_envs
-from dexmachina.envs.base_env import BaseEnv
 
 # --- Camera & Visualizer Activation Hook for Genesis ---
 _original_init = BaseEnv.__init__

@@ -8,8 +8,10 @@ os.environ["JAX_DEFAULT_MATMUL_PRECISION"] = "float32"
 os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = "false"
 os.environ["XLA_FLAGS"] = "--xla_cpu_multi_thread_eigen=false intra_op_parallelism_threads=1"
 
-# Force global initialization of Genesis to prevent local circular import crashes
-import genesis as gs
+# Imported first on purpose: training misbehaved without it (cause not pinned down).
+import genesis as gs  # noqa: F401 (unused on purpose)
+
+# isort: split
 
 
 import argparse
@@ -28,6 +30,7 @@ from flash_rl.common import create_logger
 from flash_rl.envs import create_envs
 from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import Tensor
+
 try:  # unified W&B logging when run from the dexhand-bench umbrella repo
     from dexhand_bench.wandb_logger import UniversalLogger
 except ModuleNotFoundError as e:
@@ -153,7 +156,7 @@ def run(args: argparse.Namespace) -> None:
     print(f"  -> Curriculum Controller: {type(getattr(base_env, 'curriculum', None))}")
     print("=" * 60 + "\n")
 
-    if not getattr(base_env, "use_curriculum", False) is True:
+    if getattr(base_env, "use_curriculum", False) is not True:
         print("\n\n[FATAL] Training aborted at Step 0: base_env.use_curriculum is FALSE!\n")
     if getattr(base_env, "curriculum", None) is None:
         print("\n\n[FATAL] Training aborted at Step 0: base_env.curriculum is None!\n")

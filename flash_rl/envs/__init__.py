@@ -109,6 +109,7 @@ def create_envs(
 
     elif env_type == "dexmachina":
         import genesis as gs
+
         from flash_rl.envs.dexmachina import GenesisFlashSACWrapper, make_dexmachina_env
 
         rl_device = kwargs.get("rl_device", "cuda:0")

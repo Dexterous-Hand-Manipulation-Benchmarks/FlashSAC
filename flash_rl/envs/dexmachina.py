@@ -1,6 +1,6 @@
-import torch
-import numpy as np
 import gymnasium as gym
+import numpy as np
+import torch
 
 
 class GenesisFlashSACWrapper(gym.Env):
@@ -185,7 +185,7 @@ class GenesisFlashSACWrapper(gym.Env):
 def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
     """Build a Dexmachina BaseEnv from FlashSAC's Hydra env kwargs."""
     from dexmachina.envs.base_env import BaseEnv
-    from dexmachina.envs.constructors import get_common_argparser, get_all_env_cfg, parse_clip_string
+    from dexmachina.envs.constructors import get_all_env_cfg, get_common_argparser, parse_clip_string
 
     kwargs = hydra_kwargs
     parser = get_common_argparser()

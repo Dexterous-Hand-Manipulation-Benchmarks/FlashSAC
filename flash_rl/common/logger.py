@@ -1,11 +1,12 @@
 import time
-from typing import Any, Optional, Dict
+from typing import Any, Optional
+
 import numpy as np
 import torch
 from omegaconf import OmegaConf
 
 # Universal Metric Mapping
-METRIC_MAPPING: Dict[str, str] = {
+METRIC_MAPPING: dict[str, str] = {
     # 3D Mesh Tracking & Evaluation
     "auc_add": "eval/auc_add",
     "AUC_ADD": "eval/auc_add",
@@ -167,6 +168,7 @@ class WandbTrainerLogger:
 class TensorboardTrainerLogger:
     def __init__(self, cfg: Any):
         from datetime import datetime
+
         from torch.utils.tensorboard import SummaryWriter
 
         timestamp = datetime.now().strftime("%m%d_%H%M%S")
@@ -223,7 +225,7 @@ class AverageMeter:
 
 
 class AverageMeterDict:
-    def __init__(self, meters: Optional[Dict[str, AverageMeter]] = None):
+    def __init__(self, meters: Optional[dict[str, AverageMeter]] = None):
         self.meters = meters if meters else {}
 
     def __getitem__(self, key: str) -> AverageMeter:
