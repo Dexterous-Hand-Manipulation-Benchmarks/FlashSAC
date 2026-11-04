@@ -19,6 +19,23 @@ BOX_CLIP = "box-30-230-s01-01"
 MIXER_CLIP = "mixer-0-150-s01-01"
 
 
+# Names under which the wrapper reports TrackingErrors in its infos.
+SUCCESS_2CM_METRIC = "eval/success_2cm"
+SUCCESS_5CM_METRIC = "eval/success_5cm"
+POS_DIST_METRIC = "env/pos_dist"
+ROT_DIST_METRIC = "env/rot_dist"
+ARTI_DIST_METRIC = "env/arti_dist"
+KEYPOINT_DIST_METRIC = "env/keypoint_dist"
+TRACKING_METRICS = (
+    SUCCESS_2CM_METRIC,
+    SUCCESS_5CM_METRIC,
+    POS_DIST_METRIC,
+    ROT_DIST_METRIC,
+    ARTI_DIST_METRIC,
+    KEYPOINT_DIST_METRIC,
+)
+
+
 @dataclass(frozen=True, slots=True)
 class TrackingErrors:
     """Per-env tracking errors and success flags of the last step; None where dexmachina reported none."""
@@ -45,12 +62,12 @@ class TrackingErrors:
     def log_means(self) -> dict[str, float]:
         """Means over the envs under FlashSAC's metric names, leaving out what dexmachina did not report."""
         # dexmachina's rewards.py defines success for all methods.
-        success_flags = {"eval/success_2cm": self.success_2cm, "eval/success_5cm": self.success_5cm}
+        success_flags = {SUCCESS_2CM_METRIC: self.success_2cm, SUCCESS_5CM_METRIC: self.success_5cm}
         distances = {
-            "env/pos_dist": self.pos_dist,
-            "env/rot_dist": self.rot_dist,
-            "env/arti_dist": self.arti_dist,
-            "env/keypoint_dist": self.keypoint_dist,
+            POS_DIST_METRIC: self.pos_dist,
+            ROT_DIST_METRIC: self.rot_dist,
+            ARTI_DIST_METRIC: self.arti_dist,
+            KEYPOINT_DIST_METRIC: self.keypoint_dist,
         }
         means = {name: flags.float().mean().item() for name, flags in success_flags.items() if flags is not None}
         means.update({name: dist.mean().item() for name, dist in distances.items() if dist is not None})

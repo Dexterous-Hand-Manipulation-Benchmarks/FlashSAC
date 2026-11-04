@@ -28,6 +28,7 @@ from omegaconf import OmegaConf
 from flash_rl.agents import create_agent
 from flash_rl.common import create_logger
 from flash_rl.envs import create_envs
+from flash_rl.envs.dexmachina import TRACKING_METRICS
 from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import Tensor
 
@@ -211,8 +212,7 @@ def run(args: argparse.Namespace) -> None:
 
         # Log online tracking and success rate metrics
         metric_payload = {}
-        for k in ["eval/success_2cm", "eval/success_5cm", "env/pos_dist", "env/rot_dist", "env/arti_dist",
-                  "env/keypoint_dist", "env/wrist_pdist", "env/contact_force"]:
+        for k in TRACKING_METRICS:
             if k in env_infos:
                 metric_payload[k] = env_infos[k]
 

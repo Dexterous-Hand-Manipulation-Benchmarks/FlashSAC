@@ -5,6 +5,7 @@ import torch
 from gymnasium.vector import VectorEnv
 
 from .agents.base_agent import BaseAgent
+from .envs.dexmachina import SUCCESS_2CM_METRIC, SUCCESS_5CM_METRIC
 from .types import NDArray, Tensor
 
 
@@ -61,8 +62,8 @@ def evaluate(
                 success = infos["success"].astype("float") * (1 - dones)
                 success_once = np.logical_or(success_once, success)
 
-            if "eval/success_5cm" in infos:
-                total_success_end_list.append(float(infos["eval/success_5cm"]))
+            if SUCCESS_5CM_METRIC in infos:
+                total_success_end_list.append(float(infos[SUCCESS_5CM_METRIC]))
             elif "success_5cm" in infos:
                 total_success_end_list.append(float(infos["success_5cm"]))
             elif "final_info" in infos:
@@ -72,8 +73,8 @@ def evaluate(
                         final_success = final_info["success"][idx].astype("float") * (1 - dones[idx])
                         success_end[idx] = final_success
 
-            if "eval/success_2cm" in infos:
-                total_success_once_list.append(float(infos["eval/success_2cm"]))
+            if SUCCESS_2CM_METRIC in infos:
+                total_success_once_list.append(float(infos[SUCCESS_2CM_METRIC]))
             elif "success_2cm" in infos:
                 total_success_once_list.append(float(infos["success_2cm"]))
 
