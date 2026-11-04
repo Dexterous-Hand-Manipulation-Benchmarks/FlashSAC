@@ -2,6 +2,30 @@ import gymnasium as gym
 import numpy as np
 import torch
 
+IMAGE_NDIM = 3
+RGB_CHANNELS = 3
+RGBA_CHANNELS = 4
+# Float frames whose maximum is at most this are [0, 1] images; the margin absorbs rounding above 1.0.
+UNIT_RANGE_MAX = 1.01
+
+# Clip ids are "<object>-<start>-<end>-<subject>-<take>"; a bare frame range gets subject 1, take 1.
+CLIP_ID_PARTS = 5
+CLIP_RANGE_PARTS = 3
+DEFAULT_SUBJECT_TAKE = "s01-01"
+BOX_CLIP = "box-30-230-s01-01"
+MIXER_CLIP = "mixer-0-150-s01-01"
+
+
+def to_uint8_rgb(image: np.ndarray) -> np.ndarray:
+    """Drops an alpha channel and scales float frames to uint8."""
+    if image.shape[-1] == RGBA_CHANNELS:
+        image = image[..., :RGB_CHANNELS]
+    if image.dtype != np.uint8:
+        if image.max() <= UNIT_RANGE_MAX:
+            image = image * 255.0
+        image = np.clip(image, 0, 255).astype(np.uint8)
+    return image
+
 
 class GenesisFlashSACWrapper(gym.Env):
     """
@@ -118,14 +142,9 @@ class GenesisFlashSACWrapper(gym.Env):
             arti_dist = rew_dict.get("arti_dist", None)
 
             if pos_dist is not None and rot_dist is not None:
-                succ_2cm = (pos_dist < 0.02) & (rot_dist < 0.20)
-                succ_5cm = (pos_dist < 0.05) & (rot_dist < 0.35)
-                if arti_dist is not None:
-                    succ_2cm = succ_2cm & (arti_dist < 0.10)
-                    succ_5cm = succ_5cm & (arti_dist < 0.15)
-
-                infos["eval/success_2cm"] = succ_2cm.float().mean().item()
-                infos["eval/success_5cm"] = succ_5cm.float().mean().item()
+                # dexmachina's rewards.py defines success for all methods.
+                infos["eval/success_2cm"] = rew_dict["success_2cm"].float().mean().item()
+                infos["eval/success_5cm"] = rew_dict["success_5cm"].float().mean().item()
                 infos["env/pos_dist"] = pos_dist.mean().item()
                 infos["env/rot_dist"] = rot_dist.mean().item()
                 if arti_dist is not None:
@@ -156,13 +175,8 @@ class GenesisFlashSACWrapper(gym.Env):
                 image = render_out[0] if isinstance(render_out, tuple) else render_out
                 if isinstance(image, torch.Tensor):
                     image = image.cpu().numpy()
-                if image.shape[-1] == 4:
-                    image = image[..., :3]
-                if image.dtype != np.uint8:
-                    if image.max() <= 1.01:
-                        image = image * 255.0
-                    image = np.clip(image, 0, 255).astype(np.uint8)
-                if image.ndim == 3:
+                image = to_uint8_rgb(image)
+                if image.ndim == IMAGE_NDIM:
                     image = image[np.newaxis, ...]
                 return image
             except Exception:
@@ -226,15 +240,15 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
     clip_str = str(raw_clip)
 
     if "box" in clip_str or "box" in str(env_name):
-        clip_str = "box-30-230-s01-01"
+        clip_str = BOX_CLIP
     elif "mixer" in clip_str or "mixer" in str(env_name):
-        clip_str = "mixer-0-150-s01-01"
+        clip_str = MIXER_CLIP
     else:
         parts = clip_str.split("-")
-        if len(parts) == 3:
-            clip_str = f"{clip_str}-s01-01"
-        elif len(parts) != 5:
-            clip_str = "box-30-230-s01-01"
+        if len(parts) == CLIP_RANGE_PARTS:
+            clip_str = f"{clip_str}-{DEFAULT_SUBJECT_TAKE}"
+        elif len(parts) != CLIP_ID_PARTS:
+            clip_str = BOX_CLIP
 
     args.clip = clip_str
     parse_clip_string(clip_str)

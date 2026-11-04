@@ -31,6 +31,16 @@ from dexmachina.envs.base_env import BaseEnv
 
 from flash_rl.agents import create_agent
 from flash_rl.envs import create_envs
+from flash_rl.envs.dexmachina import IMAGE_NDIM, RGB_CHANNELS, to_uint8_rgb
+
+GRAYSCALE_NDIM = 2
+MIN_FRAME_SIDE_PX = 10
+RENDER_EVERY_N_STEPS = 2
+DEFAULT_VIDEO_FPS = 30
+# Success = per-frame ADD below the threshold, in metres.
+ADD_SUCCESS_THRESHOLDS_M = {"success_2cm": 0.02, "success_5cm": 0.05}
+# Used when the config has no train-env count: num_train_envs of the reported runs.
+REPORTED_NUM_TRAIN_ENVS = 1024
 
 # --- Camera & Visualizer Activation Hook for Genesis ---
 _original_init = BaseEnv.__init__
@@ -73,26 +83,27 @@ def sanitize_frame(frame):
     if not isinstance(frame, np.ndarray):
         return None
 
-    while frame.ndim > 3 and frame.shape[0] == 1:
+    while frame.ndim > IMAGE_NDIM and frame.shape[0] == 1:
         frame = frame[0]
 
-    if frame.ndim == 2:
-        frame = np.stack([frame] * 3, axis=-1)
+    if frame.ndim == GRAYSCALE_NDIM:
+        frame = np.stack([frame] * RGB_CHANNELS, axis=-1)
 
-    if frame.ndim == 3 and frame.shape[-1] == 4:
-        frame = frame[..., :3]
+    frame = to_uint8_rgb(frame)
 
-    if frame.dtype != np.uint8:
-        if frame.max() <= 1.01 and frame.max() > 0:
-            frame = frame * 255.0
-        frame = np.clip(frame, 0, 255).astype(np.uint8)
-
-    if frame.ndim == 3 and frame.shape[-1] == 3 and frame.shape[0] > 10 and frame.shape[1] > 10:
+    if frame.ndim == IMAGE_NDIM and frame.shape[-1] == RGB_CHANNELS and min(frame.shape[:2]) > MIN_FRAME_SIDE_PX:
         return frame
     return None
 
 
-def write_video_file(frames, video_path, fps=30):
+def video_fps(uenv):
+    """Frame rate that plays every RENDER_EVERY_N_STEPS-th simulation step in real time."""
+    if hasattr(uenv, "dt") and uenv.dt > 0:
+        return int(1.0 / uenv.dt / RENDER_EVERY_N_STEPS)
+    return DEFAULT_VIDEO_FPS
+
+
+def write_video_file(frames, video_path, fps):
     try:
         from moviepy import ImageSequenceClip
         clip_obj = ImageSequenceClip(frames, fps=fps)
@@ -180,7 +191,7 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
                 demo_idx = min(env_step, len(demo_state_tensor) - 1)
                 eval_data["demo_state"].append(demo_state_tensor[demo_idx].detach().cpu().numpy())
 
-            if i % 2 == 0 and hasattr(uenv, "_floating_camera") and uenv._floating_camera is not None:
+            if i % RENDER_EVERY_N_STEPS == 0 and getattr(uenv, "_floating_camera", None) is not None:
                 try:
                     r_out = uenv._floating_camera.render()
                     frame = r_out[0] if isinstance(r_out, tuple) else r_out
@@ -199,8 +210,7 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
     clean_renders = [sanitize_frame(r) for r in manual_renders if sanitize_frame(r) is not None]
     if len(clean_renders) > 0:
         video_path = os.path.join(out_dir, f"{file_tag}_video.mp4")
-        fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
-        if write_video_file(clean_renders, video_path, fps=fps):
+        if write_video_file(clean_renders, video_path, fps=video_fps(uenv)):
             print(f"[SUCCESS] Saved video for {file_tag} to {video_path}")
 
     # Build metric dictionary under metric_prefix
@@ -230,10 +240,9 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
         add_npy_path = os.path.join(out_dir, f"{file_tag}_add.npy")
         if os.path.exists(add_npy_path):
             add_data = np.load(add_npy_path, allow_pickle=True).item()
-            succ_2cm = [np.mean(add_data[part] < 0.02) for part in add_data.keys()]
-            succ_5cm = [np.mean(add_data[part] < 0.05) for part in add_data.keys()]
-            metrics[f"{metric_prefix}/success_2cm"] = float(np.mean(succ_2cm))
-            metrics[f"{metric_prefix}/success_5cm"] = float(np.mean(succ_5cm))
+            for name, threshold in ADD_SUCCESS_THRESHOLDS_M.items():
+                per_part = [np.mean(add_data[part] < threshold) for part in add_data]
+                metrics[f"{metric_prefix}/{name}"] = float(np.mean(per_part))
     except Exception as e:
         print(f"[WARNING] ADD calculation failed for {file_tag}: {e}")
 
@@ -262,7 +271,7 @@ def main():
 
     scale_candidate = cfg.env.get("num_train_envs", None) if hasattr(cfg, "env") else None
     if scale_candidate is None or int(scale_candidate) <= 1:
-        train_env_scale = 1024
+        train_env_scale = REPORTED_NUM_TRAIN_ENVS
     else:
         train_env_scale = int(scale_candidate)
     if hasattr(cfg, "env"):
@@ -313,8 +322,7 @@ def main():
     )
     log_payload.update(m_assisted)
     if vid_assisted:
-        fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
-        log_payload["eval/assisted/video"] = wandb.Video(vid_assisted, fps=fps, format="mp4", caption=f"Assisted Step {args.step}")
+        log_payload["eval/assisted/video"] = wandb.Video(vid_assisted, fps=video_fps(uenv), format="mp4", caption=f"Assisted Step {args.step}")
 
     # PASS 2: UNASSISTED EVALUATION (eval/* benchmark)
     if target_obj is not None and getattr(target_obj, "actuated", False):
@@ -331,8 +339,7 @@ def main():
     )
     log_payload.update(m_unassisted)
     if vid_unassisted:
-        fps = int(1.0 / uenv.dt / 2) if hasattr(uenv, "dt") and uenv.dt > 0 else 30
-        log_payload["eval/video"] = wandb.Video(vid_unassisted, fps=fps, format="mp4", caption=f"Benchmark Step {args.step}")
+        log_payload["eval/video"] = wandb.Video(vid_unassisted, fps=video_fps(uenv), format="mp4", caption=f"Benchmark Step {args.step}")
 
     # WANDB LOGGING
     if args.wandb_run_id:
