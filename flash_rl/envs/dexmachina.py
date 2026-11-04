@@ -1,3 +1,6 @@
+from collections.abc import Mapping
+from dataclasses import dataclass
+
 import gymnasium as gym
 import numpy as np
 import torch
@@ -14,6 +17,44 @@ CLIP_RANGE_PARTS = 3
 DEFAULT_SUBJECT_TAKE = "s01-01"
 BOX_CLIP = "box-30-230-s01-01"
 MIXER_CLIP = "mixer-0-150-s01-01"
+
+
+@dataclass(frozen=True, slots=True)
+class TrackingErrors:
+    """Per-env tracking errors and success flags of the last step; None where dexmachina reported none."""
+
+    pos_dist: torch.Tensor | None
+    rot_dist: torch.Tensor | None
+    arti_dist: torch.Tensor | None
+    success_2cm: torch.Tensor | None
+    success_5cm: torch.Tensor | None
+    keypoint_dist: torch.Tensor | None
+
+    @classmethod
+    def from_rew_dict(cls, rew_dict: Mapping[str, torch.Tensor]) -> "TrackingErrors":
+        # The only place that knows the keys of dexmachina's rew_dict (envs/rewards.py).
+        return cls(
+            pos_dist=rew_dict.get("pos_dist"),
+            rot_dist=rew_dict.get("rot_dist"),
+            arti_dist=rew_dict.get("arti_dist"),
+            success_2cm=rew_dict.get("success_2cm"),
+            success_5cm=rew_dict.get("success_5cm"),
+            keypoint_dist=rew_dict.get("keypoint_dist"),
+        )
+
+    def log_means(self) -> dict[str, float]:
+        """Means over the envs under FlashSAC's metric names, leaving out what dexmachina did not report."""
+        # dexmachina's rewards.py defines success for all methods.
+        success_flags = {"eval/success_2cm": self.success_2cm, "eval/success_5cm": self.success_5cm}
+        distances = {
+            "env/pos_dist": self.pos_dist,
+            "env/rot_dist": self.rot_dist,
+            "env/arti_dist": self.arti_dist,
+            "env/keypoint_dist": self.keypoint_dist,
+        }
+        means = {name: flags.float().mean().item() for name, flags in success_flags.items() if flags is not None}
+        means.update({name: dist.mean().item() for name, dist in distances.items() if dist is not None})
+        return means
 
 
 def to_uint8_rgb(image: np.ndarray) -> np.ndarray:
@@ -136,26 +177,7 @@ class GenesisFlashSACWrapper(gym.Env):
 
         # --- High-Speed GPU Online Success & Tracking Error Metrics ---
         if hasattr(self.env, "rew_dict") and isinstance(self.env.rew_dict, dict):
-            rew_dict = self.env.rew_dict
-            pos_dist = rew_dict.get("pos_dist", None)
-            rot_dist = rew_dict.get("rot_dist", None)
-            arti_dist = rew_dict.get("arti_dist", None)
-
-            if pos_dist is not None and rot_dist is not None:
-                # dexmachina's rewards.py defines success for all methods.
-                infos["eval/success_2cm"] = rew_dict["success_2cm"].float().mean().item()
-                infos["eval/success_5cm"] = rew_dict["success_5cm"].float().mean().item()
-                infos["env/pos_dist"] = pos_dist.mean().item()
-                infos["env/rot_dist"] = rot_dist.mean().item()
-                if arti_dist is not None:
-                    infos["env/arti_dist"] = arti_dist.mean().item()
-
-            if "keypoint_dist" in rew_dict:
-                infos["env/keypoint_dist"] = rew_dict["keypoint_dist"].mean().item()
-            if "wrist_pdist" in rew_dict:
-                infos["env/wrist_pdist"] = rew_dict["wrist_pdist"].mean().item()
-            if "contact_force" in rew_dict:
-                infos["env/contact_force"] = rew_dict["contact_force"].mean().item()
+            infos.update(TrackingErrors.from_rew_dict(self.env.rew_dict).log_means())
 
         # --- Explicitly Forward Gain and Stiffness Parameters for WandB ---
         for param_name in ["kp", "kv", "fr", "kp_lower", "kv_lower", "fr_lower"]:
