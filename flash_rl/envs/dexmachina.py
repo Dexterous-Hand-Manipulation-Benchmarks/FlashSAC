@@ -74,6 +74,11 @@ class TrackingErrors:
         return means
 
 
+def curriculum_epoch(interaction_step: int, num_interaction_steps: float, max_epochs: int) -> int:
+    """Curriculum epoch of an interaction step when max_epochs are spread evenly over num_interaction_steps."""
+    return int(interaction_step * max_epochs / num_interaction_steps)
+
+
 def to_uint8_rgb(image: np.ndarray) -> np.ndarray:
     """Drops an alpha channel and scales float frames to uint8."""
     if image.shape[-1] == RGBA_CHANNELS:
@@ -255,8 +260,8 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
         hydra_kwargs.get("curriculum", True)
     )
 
-    # Enforce max_epochs for curriculum schedule so zero_epoch aligns with training length
-    args.max_epochs = int(hydra_kwargs.get("max_epochs", 10000))
+    # The training loop's curriculum clock uses the same max_epochs, so zero_epoch aligns with the training length.
+    args.max_epochs = int(hydra_kwargs["max_epochs"])
 
     # Forward reward shaping configs if provided in hydra overrides
     reward_cfg_overrides = hydra_kwargs.get("reward_cfg", None)

@@ -28,7 +28,7 @@ from omegaconf import OmegaConf
 from flash_rl.agents import create_agent
 from flash_rl.common import create_logger
 from flash_rl.envs import create_envs
-from flash_rl.envs.dexmachina import TRACKING_METRICS
+from flash_rl.envs.dexmachina import TRACKING_METRICS, curriculum_epoch
 from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import Tensor
 
@@ -145,7 +145,6 @@ def run(args: argparse.Namespace) -> None:
     update_info = {}
 
     current_epoch = -1
-    max_epochs = 10_000
 
     base_env = getattr(train_env, "env", getattr(train_env, "base_env", train_env))
     target_obj = getattr(base_env, "object", None)
@@ -184,7 +183,7 @@ def run(args: argparse.Namespace) -> None:
     for interaction_step in tqdm.tqdm(range(1, int(cfg.num_interaction_steps + 1)), smoothing=0.1, mininterval=0.5):
         # 1. Update Dexmachina Curriculum
         if hasattr(base_env, "set_curriculum") and getattr(base_env, "use_curriculum", False) is True:
-            epoch = int((interaction_step * max_epochs) / cfg.num_interaction_steps)
+            epoch = curriculum_epoch(interaction_step, cfg.num_interaction_steps, cfg.env.max_epochs)
             if epoch > current_epoch:
                 res = base_env.set_curriculum(epoch)
                 if epoch <= 2:

@@ -17,3 +17,6 @@ env:
   hand: 'allegro_hand'
   clip: 's01_ketchup_01'
   retarget_name: 'para'
+  # Curriculum length in epochs: train.py spreads them evenly over the run, and dexmachina zeroes the object
+  # gains from epoch max_epochs - num_zero_epoch on.
+  max_epochs: 10000

@@ -31,7 +31,7 @@ from dexmachina.envs.base_env import BaseEnv
 
 from flash_rl.agents import create_agent
 from flash_rl.envs import create_envs
-from flash_rl.envs.dexmachina import IMAGE_NDIM, RGB_CHANNELS, to_uint8_rgb
+from flash_rl.envs.dexmachina import IMAGE_NDIM, RGB_CHANNELS, curriculum_epoch, to_uint8_rgb
 
 GRAYSCALE_NDIM = 2
 MIN_FRAME_SIDE_PX = 10
@@ -41,6 +41,9 @@ DEFAULT_VIDEO_FPS = 30
 ADD_SUCCESS_THRESHOLDS_M = {"success_2cm": 0.02, "success_5cm": 0.05}
 # Used when the config has no train-env count: num_train_envs of the reported runs.
 REPORTED_NUM_TRAIN_ENVS = 1024
+# num_interaction_steps of the reported runs (50_000_896 env steps / 1024 envs, scripts/flashsac/train.sh); runs of
+# another size need their own value here until eval reads it from the run's config.
+REPORTED_INTERACTION_STEPS = 48829
 
 # --- Camera & Visualizer Activation Hook for Genesis ---
 _original_init = BaseEnv.__init__
@@ -305,10 +308,8 @@ def main():
     target_obj = uenv.objects[uenv.object_names[0]] if (hasattr(uenv, "objects") and uenv.object_names) else None
 
     # PASS 1: ASSISTED EVALUATION (eval/assisted/*)
-    TOTAL_INTERACTION_STEPS = 48829  # 50_000_896 / 1024 envs
-    MAX_EPOCHS = 10_000
     if hasattr(uenv, "set_curriculum") and args.step is not None:
-        matched_epoch = int((args.step * MAX_EPOCHS) / TOTAL_INTERACTION_STEPS)
+        matched_epoch = curriculum_epoch(args.step, REPORTED_INTERACTION_STEPS, cfg.env.max_epochs)
         uenv.set_curriculum(matched_epoch)
         print(f"[INFO] Pass 1: Active curriculum epoch set to {matched_epoch}")
 
