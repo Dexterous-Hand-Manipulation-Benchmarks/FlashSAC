@@ -31,7 +31,14 @@ from dexmachina.envs.base_env import BaseEnv
 
 from flash_rl.agents import create_agent
 from flash_rl.envs import create_envs
-from flash_rl.envs.dexmachina import IMAGE_NDIM, RGB_CHANNELS, curriculum_epoch, to_uint8_rgb
+from flash_rl.envs.dexmachina import (
+    IMAGE_NDIM,
+    REPORTED_INTERACTION_STEPS,
+    REPORTED_NUM_TRAIN_ENVS,
+    RGB_CHANNELS,
+    curriculum_epoch,
+    to_uint8_rgb,
+)
 
 GRAYSCALE_NDIM = 2
 MIN_FRAME_SIDE_PX = 10
@@ -39,11 +46,6 @@ RENDER_EVERY_N_STEPS = 2
 DEFAULT_VIDEO_FPS = 30
 # Success = per-frame ADD below the threshold, in metres.
 ADD_SUCCESS_THRESHOLDS_M = {"success_2cm": 0.02, "success_5cm": 0.05}
-# Used when the config has no train-env count: num_train_envs of the reported runs.
-REPORTED_NUM_TRAIN_ENVS = 1024
-# num_interaction_steps of the reported runs (50_000_896 env steps / 1024 envs, scripts/flashsac/train.sh); runs of
-# another size need their own value here until eval reads it from the run's config.
-REPORTED_INTERACTION_STEPS = 48829
 
 # --- Camera & Visualizer Activation Hook for Genesis ---
 _original_init = BaseEnv.__init__
@@ -232,7 +234,7 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
             stats_name=f"{file_tag}_add_stats.json",
             overwrite=True,
             output_cache=False,
-            cache_dir=None,
+            cache_dir=None,  # load_part_verts (compute_add.py:65) reads it only when output_cache is set
         )
         if os.path.exists(stats_path):
             with open(stats_path, "r") as f:

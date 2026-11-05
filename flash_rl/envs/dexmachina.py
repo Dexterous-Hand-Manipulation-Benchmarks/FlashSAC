@@ -18,6 +18,11 @@ DEFAULT_SUBJECT_TAKE = "s01-01"
 BOX_CLIP = "box-30-230-s01-01"
 MIXER_CLIP = "mixer-0-150-s01-01"
 
+# Size of the reported runs (NUM_ENV_STEPS and NUM_TRAIN_ENVS in scripts/flashsac/train.sh); runs of another size
+# need their own values until eval reads them from the run's config.
+REPORTED_ENV_STEPS = 50_000_896
+REPORTED_NUM_TRAIN_ENVS = 1024
+REPORTED_INTERACTION_STEPS = REPORTED_ENV_STEPS // REPORTED_NUM_TRAIN_ENVS
 
 # Names under which the wrapper reports TrackingErrors in its infos.
 SUCCESS_2CM_METRIC = "eval/success_2cm"
@@ -61,7 +66,7 @@ class TrackingErrors:
 
     def log_means(self) -> dict[str, float]:
         """Means over the envs under FlashSAC's metric names, leaving out what dexmachina did not report."""
-        # dexmachina's rewards.py defines success for all methods.
+        # Success is defined in dexmachina; we only report the flags it provides.
         success_flags = {SUCCESS_2CM_METRIC: self.success_2cm, SUCCESS_5CM_METRIC: self.success_5cm}
         distances = {
             POS_DIST_METRIC: self.pos_dist,
@@ -80,7 +85,7 @@ def curriculum_epoch(interaction_step: int, num_interaction_steps: float, max_ep
 
 
 def to_uint8_rgb(image: np.ndarray) -> np.ndarray:
-    """Drops an alpha channel and scales float frames to uint8."""
+    """Takes a channels-last image, drops an alpha channel and scales float frames to uint8."""
     if image.shape[-1] == RGBA_CHANNELS:
         image = image[..., :RGB_CHANNELS]
     if image.dtype != np.uint8:
