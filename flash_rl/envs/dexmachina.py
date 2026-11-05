@@ -1,5 +1,7 @@
 from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
+from typing import Any
 
 import gymnasium as gym
 import numpy as np
@@ -17,12 +19,20 @@ CLIP_RANGE_PARTS = 3
 DEFAULT_SUBJECT_TAKE = "s01-01"
 BOX_CLIP = "box-30-230-s01-01"
 MIXER_CLIP = "mixer-0-150-s01-01"
+# Retargeting the demos were made with; Hydra passes it from configs/env/dexmachina.yaml.
+DEFAULT_RETARGET_NAME = "para"
 
 # Size of the reported runs (NUM_ENV_STEPS and NUM_TRAIN_ENVS in scripts/flashsac/train.sh); runs of another size
 # need their own values until eval reads them from the run's config.
 REPORTED_ENV_STEPS = 50_000_896
 REPORTED_NUM_TRAIN_ENVS = 1024
 REPORTED_INTERACTION_STEPS = REPORTED_ENV_STEPS // REPORTED_NUM_TRAIN_ENVS
+
+# Keys of dexmachina's reward config (envs/rewards.py) that the factory also maps onto dexmachina's args.
+OBJ_POS_BETA_KEY = "obj_pos_beta"
+OBJ_ROT_BETA_KEY = "obj_rot_beta"
+OBJ_ARTI_BETA_KEY = "obj_arti_beta"
+CONTACT_REW_WEIGHT_KEY = "contact_rew_weight"
 
 # Names under which the wrapper reports TrackingErrors in its infos.
 SUCCESS_2CM_METRIC = "eval/success_2cm"
@@ -77,6 +87,35 @@ class TrackingErrors:
         means = {name: flags.float().mean().item() for name, flags in success_flags.items() if flags is not None}
         means.update({name: dist.mean().item() for name, dist in distances.items() if dist is not None})
         return means
+
+
+@dataclass(frozen=True, slots=True)
+class DexmachinaEnvConfig:
+    """FlashSAC's dexmachina settings, read once from the Hydra env kwargs; hand None = dexmachina's default."""
+
+    clip: str
+    max_epochs: int
+    hand: str | None
+    retarget_name: str
+    actuate_object: bool
+    reward_overrides: Mapping[str, Any] | None
+
+    @classmethod
+    def from_hydra(cls, hydra_kwargs: Mapping[str, Any], env_name: str) -> "DexmachinaEnvConfig":
+        reward_cfg = hydra_kwargs.get("reward_cfg")
+        return cls(
+            # Hydra's env_name names the clip when the config sets none.
+            clip=str(hydra_kwargs.get("clip", env_name)),
+            max_epochs=int(hydra_kwargs["max_epochs"]),
+            hand=hydra_kwargs.get("hand"),
+            retarget_name=hydra_kwargs.get("retarget_name", DEFAULT_RETARGET_NAME),
+            # dexmachina's default curriculum decays the actuated object's gains (kp, kv, force range;
+            # constructors.py), so the object is actuated whenever the curriculum is on, unless the config says
+            # otherwise.
+            actuate_object=hydra_kwargs.get("actuate_object", hydra_kwargs.get("curriculum", True)),
+            # Read-only, so the overrides cannot change after they were read.
+            reward_overrides=None if reward_cfg is None else MappingProxyType(dict(reward_cfg)),
+        )
 
 
 def curriculum_epoch(interaction_step: int, num_interaction_steps: float, max_epochs: int) -> int:
@@ -250,44 +289,33 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
     from dexmachina.envs.base_env import BaseEnv
     from dexmachina.envs.constructors import get_all_env_cfg, get_common_argparser, parse_clip_string
 
-    kwargs = hydra_kwargs
+    config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
     parser = get_common_argparser()
     args, _ = parser.parse_known_args([])
     args.num_envs = num_envs
     args.seed = seed
 
-    if "hand" in hydra_kwargs:
-        args.hand = hydra_kwargs["hand"]
-
-    # Forward actuation/curriculum flags from Hydra kwargs to Dexmachina args
-    args.actuate_object = hydra_kwargs.get(
-        "actuate_object",
-        hydra_kwargs.get("curriculum", True)
-    )
-
+    if config.hand is not None:
+        args.hand = config.hand
+    args.actuate_object = config.actuate_object
     # The training loop's curriculum clock uses the same max_epochs, so zero_epoch aligns with the training length.
-    args.max_epochs = int(hydra_kwargs["max_epochs"])
+    args.max_epochs = config.max_epochs
 
-    # Forward reward shaping configs if provided in hydra overrides
-    reward_cfg_overrides = hydra_kwargs.get("reward_cfg", None)
-    if reward_cfg_overrides is not None:
-        rcfg_dict = dict(reward_cfg_overrides)
-        for k, v in rcfg_dict.items():
+    rewards = config.reward_overrides
+    if rewards is not None:
+        for k, v in rewards.items():
             if hasattr(args, k):
                 setattr(args, k, v)
-        if "obj_pos_beta" in rcfg_dict or "obj_rot_beta" in rcfg_dict or "obj_arti_beta" in rcfg_dict:
+        if OBJ_POS_BETA_KEY in rewards or OBJ_ROT_BETA_KEY in rewards or OBJ_ARTI_BETA_KEY in rewards:
             args.task_rew_betas = [
-                rcfg_dict.get("obj_pos_beta", args.task_rew_betas[0]),
-                rcfg_dict.get("obj_rot_beta", args.task_rew_betas[1]),
-                rcfg_dict.get("obj_arti_beta", args.task_rew_betas[2]),
+                rewards.get(OBJ_POS_BETA_KEY, args.task_rew_betas[0]),
+                rewards.get(OBJ_ROT_BETA_KEY, args.task_rew_betas[1]),
+                rewards.get(OBJ_ARTI_BETA_KEY, args.task_rew_betas[2]),
             ]
 
-    # Explicitly enforce retarget_name to match training (defaults to 'para')
-    args.retarget_name = hydra_kwargs.get("retarget_name", kwargs.get("retarget_name", "para"))
+    args.retarget_name = config.retarget_name
 
-    raw_clip = hydra_kwargs.get("clip", kwargs.get("clip", env_name))
-    clip_str = str(raw_clip)
-
+    clip_str = config.clip
     if "box" in clip_str or "box" in str(env_name):
         clip_str = BOX_CLIP
     elif "mixer" in clip_str or "mixer" in str(env_name):
@@ -303,14 +331,14 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
     parse_clip_string(clip_str)
 
     env_kwargs = get_all_env_cfg(args, device=device)
-    if reward_cfg_overrides is not None:
-        env_kwargs["reward_cfg"].update(dict(reward_cfg_overrides))
-        if "contact_rew_weight" in rcfg_dict:
-            env_kwargs["env_cfg"]["use_contact_reward"] = float(rcfg_dict["contact_rew_weight"]) > 0
+    if rewards is not None:
+        env_kwargs["reward_cfg"].update(rewards)
+        if CONTACT_REW_WEIGHT_KEY in rewards:
+            env_kwargs["env_cfg"]["use_contact_reward"] = float(rewards[CONTACT_REW_WEIGHT_KEY]) > 0
     env_kwargs['env_cfg']['use_rl_games'] = True
     env = BaseEnv(**env_kwargs)
-    if reward_cfg_overrides is not None and hasattr(env, "reward_module"):
-        for k, v in dict(reward_cfg_overrides).items():
+    if rewards is not None and hasattr(env, "reward_module"):
+        for k, v in rewards.items():
             env.reward_module.cfg[k] = v
             if hasattr(env.reward_module, k):
                 setattr(env.reward_module, k, v)
