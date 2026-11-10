@@ -147,19 +147,7 @@ def run(args: argparse.Namespace) -> None:
     current_epoch = -1
 
     base_env = getattr(train_env, "env", getattr(train_env, "base_env", train_env))
-    target_obj = getattr(base_env, "object", None)
 
-    print("\n" + "=" * 60)
-    print("[PRE-FLIGHT CHECK] Verifying Curriculum State:")
-    print(f"  -> Object Actuated:       {getattr(target_obj, 'actuated', False)}")
-    print(f"  -> use_curriculum Flag:   {getattr(base_env, 'use_curriculum', False)}")
-    print(f"  -> Curriculum Controller: {type(getattr(base_env, 'curriculum', None))}")
-    print("=" * 60 + "\n")
-
-    if getattr(base_env, "use_curriculum", False) is not True:
-        print("\n\n[FATAL] Training aborted at Step 0: base_env.use_curriculum is FALSE!\n")
-    if getattr(base_env, "curriculum", None) is None:
-        print("\n\n[FATAL] Training aborted at Step 0: base_env.curriculum is None!\n")
     import wandb
 
     # Initialize a persistent WandB table for transition milestones

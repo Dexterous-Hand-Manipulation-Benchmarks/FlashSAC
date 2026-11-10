@@ -1,7 +1,7 @@
-from collections.abc import Mapping
-from dataclasses import dataclass
+from collections.abc import Iterable, Mapping
+from dataclasses import dataclass, fields
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import gymnasium as gym
 import numpy as np
@@ -33,6 +33,10 @@ OBJ_POS_BETA_KEY = "obj_pos_beta"
 OBJ_ROT_BETA_KEY = "obj_rot_beta"
 OBJ_ARTI_BETA_KEY = "obj_arti_beta"
 CONTACT_REW_WEIGHT_KEY = "contact_rew_weight"
+IMI_REW_WEIGHT_KEY = "imi_rew_weight"
+BC_REW_WEIGHT_KEY = "bc_rew_weight"
+# Reward keys dexmachina's RewardModule reads with cfg.get (envs/rewards.py) but get_reward_cfg() leaves out.
+EXTRA_REWARD_KEYS = frozenset({"bc_wrist_weight"})
 
 # Names under which the wrapper reports TrackingErrors in its infos.
 SUCCESS_2CM_METRIC = "eval/success_2cm"
@@ -103,6 +107,12 @@ class DexmachinaEnvConfig:
     @classmethod
     def from_hydra(cls, hydra_kwargs: Mapping[str, Any], env_name: str) -> "DexmachinaEnvConfig":
         reward_cfg = hydra_kwargs.get("reward_cfg")
+        curriculum = hydra_kwargs.get("curriculum", True)
+        if curriculum and not hydra_kwargs.get("actuate_object", True):
+            raise ValueError(
+                "curriculum is true but actuate_object is false; dexmachina only runs the curriculum on an "
+                "actuated object"
+            )
         return cls(
             # Hydra's env_name names the clip when the config sets none.
             clip=str(hydra_kwargs.get("clip", env_name)),
@@ -112,10 +122,84 @@ class DexmachinaEnvConfig:
             # dexmachina's default curriculum decays the actuated object's gains (kp, kv, force range;
             # constructors.py), so the object is actuated whenever the curriculum is on, unless the config says
             # otherwise.
-            actuate_object=hydra_kwargs.get("actuate_object", hydra_kwargs.get("curriculum", True)),
+            actuate_object=hydra_kwargs.get("actuate_object", curriculum),
             # Read-only, so the overrides cannot change after they were read.
             reward_overrides=None if reward_cfg is None else MappingProxyType(dict(reward_cfg)),
         )
+
+
+@dataclass(frozen=True, slots=True)
+class AppliedEnvConfig:
+    """What a built dexmachina env uses, to compare with what FlashSAC configured."""
+
+    use_contact_reward: bool
+    object_actuated: bool
+    use_curriculum: bool
+    zero_epoch: int | None
+    reward_weights: Mapping[str, Any]
+    use_imi_rew: bool
+    use_bc_rew: bool
+    hand: str
+
+    @classmethod
+    def read_from(cls, env: Any, reward_keys: Iterable[str]) -> "AppliedEnvConfig":
+        """Reads the values from a built env; reward_keys are the overrides its RewardModule caches."""
+        curriculum = env.curriculum
+        return cls(
+            use_contact_reward=env.use_contact_reward,
+            object_actuated=env.object.actuated,
+            use_curriculum=env.use_curriculum,
+            zero_epoch=None if curriculum is None else curriculum.zero_epoch,
+            reward_weights={key: getattr(env.reward_module, key) for key in reward_keys},
+            use_imi_rew=env.reward_module.use_imi_rew,
+            use_bc_rew=env.reward_module.use_bc_rew,
+            hand=env.robots["left"].name,
+        )
+
+    @classmethod
+    def expected(
+        cls,
+        config: DexmachinaEnvConfig,
+        args: Any,
+        reward_cfg: Mapping[str, Any],
+        reward_keys: Iterable[str],
+    ) -> "AppliedEnvConfig":
+        """The values dexmachina should end up with, from the config, its parsed args and the final reward config."""
+        return cls(
+            use_contact_reward=reward_cfg[CONTACT_REW_WEIGHT_KEY] > 0,
+            object_actuated=config.actuate_object,
+            use_curriculum=config.actuate_object,
+            zero_epoch=max(config.max_epochs - args.num_zero_epoch, 0) if config.actuate_object else None,
+            reward_weights={key: reward_cfg[key] for key in reward_keys},
+            use_imi_rew=reward_cfg[IMI_REW_WEIGHT_KEY] > 0,
+            use_bc_rew=reward_cfg[BC_REW_WEIGHT_KEY] > 0,
+            # dexmachina names a robot "<hand>_<side>" (get_default_robot_cfg in envs/robot.py).
+            hand=f"{args.hand}_left",
+        )
+
+    def mismatches(self, applied: "AppliedEnvConfig") -> list[str]:
+        """One "name: configured X, applied Y" line per differing value, reward weights per key."""
+        pairs: list[tuple[str, object, object]] = [
+            (field.name, getattr(self, field.name), getattr(applied, field.name))
+            for field in fields(self)
+            if field.name != "reward_weights"
+        ]
+        pairs += [
+            (f"reward_weights.{key}", value, applied.reward_weights[key])
+            for key, value in self.reward_weights.items()
+        ]
+        return [
+            f"{name}: configured {configured}, applied {actual}"
+            for name, configured, actual in pairs
+            if configured != actual
+        ]
+
+
+def verify_applied_config(env: Any, expected: AppliedEnvConfig) -> None:
+    """Raises if the built env does not use the values FlashSAC configured."""
+    mismatches = expected.mismatches(AppliedEnvConfig.read_from(env, expected.reward_weights))
+    if mismatches:
+        raise ValueError("dexmachina env does not use the configured values: " + "; ".join(mismatches))
 
 
 def curriculum_epoch(interaction_step: int, num_interaction_steps: float, max_epochs: int) -> int:
@@ -288,10 +372,16 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
     """Build a Dexmachina BaseEnv from FlashSAC's Hydra env kwargs."""
     from dexmachina.envs.base_env import BaseEnv
     from dexmachina.envs.constructors import get_all_env_cfg, get_common_argparser, parse_clip_string
+    from dexmachina.envs.rewards import get_reward_cfg
 
     config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
     parser = get_common_argparser()
     args, _ = parser.parse_known_args([])
+    if config.actuate_object and config.max_epochs <= args.num_zero_epoch:
+        raise ValueError(
+            f"max_epochs ({config.max_epochs}) must exceed num_zero_epoch ({args.num_zero_epoch}); "
+            "otherwise dexmachina zeroes the curriculum from the first epoch"
+        )
     args.num_envs = num_envs
     args.seed = seed
 
@@ -303,6 +393,10 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
 
     rewards = config.reward_overrides
     if rewards is not None:
+        known_keys = set(cast(Mapping[str, Any], get_reward_cfg()))
+        unknown_keys = sorted(set(rewards) - known_keys - EXTRA_REWARD_KEYS)
+        if unknown_keys:
+            raise ValueError(f"unknown reward_cfg keys: {unknown_keys}")
         for k, v in rewards.items():
             if hasattr(args, k):
                 setattr(args, k, v)
@@ -337,6 +431,10 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
             env_kwargs["env_cfg"]["use_contact_reward"] = float(rewards[CONTACT_REW_WEIGHT_KEY]) > 0
     env_kwargs['env_cfg']['use_rl_games'] = True
     env = BaseEnv(**env_kwargs)
+    cached_reward_keys = [] if rewards is None else [k for k in rewards if hasattr(env.reward_module, k)]
+    final_reward_cfg = cast(Mapping[str, Any], env_kwargs["reward_cfg"])
+    expected = AppliedEnvConfig.expected(config, args, final_reward_cfg, cached_reward_keys)
+    verify_applied_config(env, expected)
     if rewards is not None and hasattr(env, "reward_module"):
         for k, v in rewards.items():
             env.reward_module.cfg[k] = v
