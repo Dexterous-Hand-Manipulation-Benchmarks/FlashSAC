@@ -418,6 +418,8 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
         unknown_keys = sorted(set(rewards) - known_keys - EXTRA_REWARD_KEYS)
         if unknown_keys:
             raise ValueError(f"unknown reward_cfg keys: {unknown_keys}")
+        # Keys that have an arg go through args: dexmachina derives env_cfg["use_contact_reward"] and the
+        # demo/contact data loading from args (envs/constructors.py).
         for k, v in rewards.items():
             if hasattr(args, k):
                 setattr(args, k, v)
@@ -447,20 +449,14 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
 
     env_kwargs = get_all_env_cfg(args, device=device)
     if rewards is not None:
+        # Reward keys without an arg (e.g. force_penalty, task_rew_weight) reach the RewardModule only here.
         env_kwargs["reward_cfg"].update(rewards)
-        if CONTACT_REW_WEIGHT_KEY in rewards:
-            env_kwargs["env_cfg"]["use_contact_reward"] = float(rewards[CONTACT_REW_WEIGHT_KEY]) > 0
     env_kwargs['env_cfg']['use_rl_games'] = True
     env = BaseEnv(**env_kwargs)
     cached_reward_keys = [] if rewards is None else [k for k in rewards if hasattr(env.reward_module, k)]
     final_reward_cfg = cast(Mapping[str, Any], env_kwargs["reward_cfg"])
     expected = AppliedEnvConfig.expected(config, args, final_reward_cfg, cached_reward_keys)
     verify_applied_config(env, expected)
-    if rewards is not None and hasattr(env, "reward_module"):
-        for k, v in rewards.items():
-            env.reward_module.cfg[k] = v
-            if hasattr(env.reward_module, k):
-                setattr(env.reward_module, k, v)
     return env
 
 
