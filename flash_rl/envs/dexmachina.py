@@ -4,8 +4,10 @@ from types import MappingProxyType
 from typing import Any, cast
 
 import gymnasium as gym
+import hydra
 import numpy as np
 import torch
+from omegaconf import DictConfig, OmegaConf
 
 IMAGE_NDIM = 3
 RGB_CHANNELS = 3
@@ -27,6 +29,8 @@ DEFAULT_RETARGET_NAME = "para"
 REPORTED_ENV_STEPS = 50_000_896
 REPORTED_NUM_TRAIN_ENVS = 1024
 REPORTED_INTERACTION_STEPS = REPORTED_ENV_STEPS // REPORTED_NUM_TRAIN_ENVS
+# The evaluation runs one env per kind, whatever the run it evaluates used.
+EVAL_ENV_COUNT_OVERRIDES = ("env.num_train_envs=1", "env.num_eval_envs=1", "env.num_record_envs=1")
 
 # Keys of dexmachina's reward config (envs/rewards.py) that the factory also maps onto dexmachina's args.
 OBJ_POS_BETA_KEY = "obj_pos_beta"
@@ -91,6 +95,23 @@ class TrackingErrors:
         means = {name: flags.float().mean().item() for name, flags in success_flags.items() if flags is not None}
         means.update({name: dist.mean().item() for name, dist in distances.items() if dist is not None})
         return means
+
+
+def compose_eval_config(
+    config_dir: str, config_name: str, overrides: Iterable[str]
+) -> tuple[DictConfig, int]:
+    """Read-only config for evaluating a checkpoint, and the env count its run trained with (for env steps).
+
+    Only the top-level ``num_train_envs`` sets that count: an ``env.num_train_envs=...`` override is replaced by
+    the eval overrides.
+    """
+    OmegaConf.register_new_resolver("eval", lambda s: eval(s), replace=True)
+    with hydra.initialize_config_dir(version_base=None, config_dir=config_dir):
+        cfg = hydra.compose(config_name=config_name, overrides=[*overrides, *EVAL_ENV_COUNT_OVERRIDES])
+    OmegaConf.resolve(cfg)
+    OmegaConf.set_readonly(cfg, True)
+    num_train_envs = int(cfg.num_train_envs)
+    return cfg, REPORTED_NUM_TRAIN_ENVS if num_train_envs <= 1 else num_train_envs
 
 
 @dataclass(frozen=True, slots=True)

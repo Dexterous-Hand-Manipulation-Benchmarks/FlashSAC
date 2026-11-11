@@ -3,7 +3,6 @@ import json
 import os
 from collections import defaultdict
 
-import hydra
 import numpy as np
 import torch
 import wandb
@@ -34,8 +33,8 @@ from flash_rl.envs import create_envs
 from flash_rl.envs.dexmachina import (
     IMAGE_NDIM,
     REPORTED_INTERACTION_STEPS,
-    REPORTED_NUM_TRAIN_ENVS,
     RGB_CHANNELS,
+    compose_eval_config,
     curriculum_epoch,
     to_uint8_rgb,
 )
@@ -269,20 +268,7 @@ def main():
     args = parser.parse_args()
 
     config_dir = os.path.abspath(args.config_path)
-    OmegaConf.register_new_resolver("eval", lambda s: eval(s), replace=True)
-    hydra.initialize_config_dir(version_base=None, config_dir=config_dir)
-    cfg = hydra.compose(config_name=args.config_name, overrides=args.overrides)
-    OmegaConf.resolve(cfg)
-
-    scale_candidate = cfg.env.get("num_train_envs", None) if hasattr(cfg, "env") else None
-    if scale_candidate is None or int(scale_candidate) <= 1:
-        train_env_scale = REPORTED_NUM_TRAIN_ENVS
-    else:
-        train_env_scale = int(scale_candidate)
-    if hasattr(cfg, "env"):
-        cfg.env.num_train_envs = 1
-        cfg.env.num_eval_envs = 1
-        cfg.env.num_record_envs = 1
+    cfg, train_env_scale = compose_eval_config(config_dir, args.config_name, args.overrides)
 
     train_env, eval_env, _ = create_envs(**cfg.env)
     target_env = eval_env if eval_env is not None else train_env

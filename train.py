@@ -23,7 +23,7 @@ import hydra
 import numpy as np
 import torch
 import tqdm
-from omegaconf import OmegaConf
+from omegaconf import DictConfig, OmegaConf
 
 from flash_rl.agents import create_agent
 from flash_rl.common import create_logger
@@ -41,21 +41,22 @@ except ModuleNotFoundError as e:
     UniversalLogger = None
 
 
+def compose_config(config_path: str, config_name: str, overrides: list[str]) -> DictConfig:
+    # eval resolver
+    OmegaConf.register_new_resolver("eval", lambda s: eval(s), replace=True)
+
+    hydra.initialize(version_base=None, config_path=config_path)
+    cfg = hydra.compose(config_name=config_name, overrides=overrides)
+    OmegaConf.resolve(cfg)
+    OmegaConf.set_readonly(cfg, True)
+    return cfg
+
+
 def run(args: argparse.Namespace) -> None:
     ###############################
     # configs
     ###############################
-    config_path = args.config_path
-    config_name = args.config_name
-    overrides = args.overrides
-
-    # eval resolver
-    OmegaConf.register_new_resolver("eval", lambda s: eval(s), replace=True)
-
-    # initialize config
-    hydra.initialize(version_base=None, config_path=config_path)
-    cfg = hydra.compose(config_name=config_name, overrides=overrides)
-    OmegaConf.resolve(cfg)
+    cfg = compose_config(args.config_path, args.config_name, args.overrides)
 
     # --- DYNAMIC LOGGER INSTALLATION ---
     hand_name = getattr(cfg.env, "hand", "unknown_hand") if hasattr(cfg, "env") else "unknown_hand"
