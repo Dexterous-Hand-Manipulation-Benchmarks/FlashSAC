@@ -49,11 +49,10 @@ RENDER_ERRORS = (gs.GenesisException, RuntimeError)
 # Success = per-frame ADD below the threshold, in metres.
 ADD_SUCCESS_THRESHOLDS_M = {"success_2cm": 0.02, "success_5cm": 0.05}
 
-# --- Camera & Visualizer Activation Hook for Genesis ---
 _original_init = BaseEnv.__init__
 
 
-def _mocked_init(self, env_cfg, *args, **kwargs):
+def _init_with_camera(self, env_cfg, *args, **kwargs):
     if type(env_cfg).__name__ == "DictConfig":
         OmegaConf.set_struct(env_cfg, False)
 
@@ -79,7 +78,9 @@ def _mocked_init(self, env_cfg, *args, **kwargs):
     _original_init(self, env_cfg, *args, **kwargs)
 
 
-BaseEnv.__init__ = _mocked_init
+def enable_video_recording():
+    """Make every BaseEnv built afterwards record from a front camera (dexmachina cannot render on macOS)."""
+    BaseEnv.__init__ = _init_with_camera
 
 
 def sanitize_frame(frame):
@@ -280,7 +281,12 @@ def main():
     parser.add_argument("--entity", type=str, default=None, help="W&B entity (default: $WANDB_ENTITY / your W&B default)")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--overrides", action="append", default=[])
+    parser.add_argument("--video", action=argparse.BooleanOptionalAction, default=True,
+                        help="record eval videos from a front camera; --no-video where Genesis cannot render "
+                             "(macOS, machines without a display)")
     args = parser.parse_args()
+    if args.video:
+        enable_video_recording()
 
     config_dir = os.path.abspath(args.config_path)
     cfg, train_env_scale = compose_eval_config(config_dir, args.config_name, args.overrides)
