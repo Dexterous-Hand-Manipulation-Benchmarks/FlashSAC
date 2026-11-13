@@ -43,6 +43,9 @@ GRAYSCALE_NDIM = 2
 MIN_FRAME_SIDE_PX = 10
 RENDER_EVERY_N_STEPS = 2
 DEFAULT_VIDEO_FPS = 30
+# What Genesis' camera.render raises (gs.raise_exception, or the renderer's RuntimeError).
+# A missed frame only shortens the video, so it is counted and reported, not fatal.
+RENDER_ERRORS = (gs.GenesisException, RuntimeError)
 # Success = per-frame ADD below the threshold, in metres.
 ADD_SUCCESS_THRESHOLDS_M = {"success_2cm": 0.02, "success_5cm": 0.05}
 
@@ -123,8 +126,9 @@ def write_video_file(frames, video_path, fps):
             writer.append_data(f)
         writer.close()
         return True
-    except Exception as e:
-        print(f"[WARNING] Video encoding failed: {e}")
+    # imageio: missing ffmpeg or codec (RuntimeError, ValueError), failed write (OSError)
+    except (OSError, RuntimeError, ValueError) as e:
+        print(f"[WARNING] Video encoding failed, continuing without a video: {e}")
         return False
 
 
@@ -155,7 +159,7 @@ def get_demo_state_tensor(uenv, device):
 
 def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, demo_state_tensor, obj_name):
     """Executes a single rollout pass, writes video/npy files, and logs to metric_prefix."""
-    ep_len = getattr(uenv, "max_episode_length", 200)
+    ep_len = uenv.max_episode_length
     reset_res = target_env.reset()
     obs = reset_res[0] if isinstance(reset_res, tuple) else reset_res
 
@@ -167,6 +171,7 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
     eval_data = defaultdict(list)
     accumulated_rewards = 0.0
     manual_renders = []
+    failed_renders = []
 
     print(f"[INFO] Running rollout for '{file_tag}' ({ep_len} steps)...")
     for i in range(ep_len):
@@ -202,8 +207,14 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
                     sanitized = sanitize_frame(frame)
                     if sanitized is not None:
                         manual_renders.append(sanitized)
-                except Exception:
-                    pass
+                except RENDER_ERRORS as e:
+                    failed_renders.append(e)
+
+    if failed_renders:
+        print(
+            f"[WARNING] {len(failed_renders)} frames of '{file_tag}' could not be rendered and are missing "
+            f"from the video; first error: {failed_renders[0]!r}"
+        )
 
     # Save rollout arrays using clean file tag
     eval_data = {k: np.stack(v) for k, v in eval_data.items()}
@@ -223,9 +234,12 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
         f"{metric_prefix}/ep_length": float(ep_len),
     }
 
+    from dexmachina.eval.compute_add import compute_for_eval
+
+    stats_path = os.path.join(out_dir, f"{file_tag}_add_stats.json")
+    add_npy_path = os.path.join(out_dir, f"{file_tag}_add.npy")
     try:
-        from dexmachina.eval.compute_add import compute_for_eval
-        stats_path = os.path.join(out_dir, f"{file_tag}_add_stats.json")
+        # overwrite=True: compute_for_eval always writes both the stats and the ADD file.
         compute_for_eval(
             eval_path=out_file,
             obj_name=obj_name,
@@ -235,20 +249,21 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
             output_cache=False,
             cache_dir=None,  # load_part_verts (compute_add.py:65) reads it only when output_cache is set
         )
-        if os.path.exists(stats_path):
-            with open(stats_path, "r") as f:
-                stats = json.load(f)
-            metrics[f"{metric_prefix}/auc_add"] = stats.get("auc", {}).get("overall", 0.0)
-            metrics[f"{metric_prefix}/add"] = stats.get("mean_add", {}).get("overall", 0.0)
-
-        add_npy_path = os.path.join(out_dir, f"{file_tag}_add.npy")
-        if os.path.exists(add_npy_path):
-            add_data = np.load(add_npy_path, allow_pickle=True).item()
-            for name, threshold in ADD_SUCCESS_THRESHOLDS_M.items():
-                per_part = [np.mean(add_data[part] < threshold) for part in add_data]
-                metrics[f"{metric_prefix}/{name}"] = float(np.mean(per_part))
     except Exception as e:
-        print(f"[WARNING] ADD calculation failed for {file_tag}: {e}")
+        raise RuntimeError(
+            f"ADD computation failed for '{file_tag}' (cause above). Without ADD the eval metrics would look "
+            "complete but lack the primary metric, so the evaluation stops. Fix the cause and rerun."
+        ) from e
+
+    with open(stats_path, "r") as f:
+        stats = json.load(f)
+    metrics[f"{metric_prefix}/auc_add"] = stats["auc"]["overall"]
+    metrics[f"{metric_prefix}/add"] = stats["mean_add"]["overall"]
+
+    add_data = np.load(add_npy_path, allow_pickle=True).item()
+    for name, threshold in ADD_SUCCESS_THRESHOLDS_M.items():
+        per_part = [np.mean(add_data[part] < threshold) for part in add_data]
+        metrics[f"{metric_prefix}/{name}"] = float(np.mean(per_part))
 
     return metrics, video_path
 
@@ -290,7 +305,7 @@ def main():
     out_dir = os.path.join(ckpt_dir, f"{step_tag}_results")
     os.makedirs(out_dir, exist_ok=True)
 
-    clip_str = getattr(cfg.env, "clip", "box-30-230")
+    clip_str = cfg.env.clip
     obj_name = clip_str.split("-")[0]
     log_payload = {}
     target_obj = uenv.objects[uenv.object_names[0]] if (hasattr(uenv, "objects") and uenv.object_names) else None
