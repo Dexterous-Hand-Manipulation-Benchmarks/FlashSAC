@@ -1,4 +1,7 @@
 # @package _global_
+# The DexMachina training env has no camera (only eval_dexmachina.py builds one), so training records no videos.
+num_record_episodes: 0
+
 env:
   env_type: 'dexmachina'
   env_name: 'dexmachina/allegro_hand'
