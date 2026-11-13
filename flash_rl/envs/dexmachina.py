@@ -362,19 +362,26 @@ class GenesisFlashSACWrapper(gym.Env):
         return obs, rew, terminated, truncated, infos
 
     def render(self):
-        if hasattr(self.env, "_floating_camera") and self.env._floating_camera is not None:
-            try:
-                render_out = self.env._floating_camera.render()
-                image = render_out[0] if isinstance(render_out, tuple) else render_out
-                if isinstance(image, torch.Tensor):
-                    image = image.cpu().numpy()
-                image = to_uint8_rgb(image)
-                if image.ndim == IMAGE_NDIM:
-                    image = image[np.newaxis, ...]
-                return image
-            except Exception:
-                pass
-        return np.zeros((1, 160, 160, 3), dtype=np.uint8)
+        camera = getattr(self.env, "_floating_camera", None)
+        if camera is None:
+            raise RuntimeError(
+                "render() needs a camera, but the DexMachina env was built without one (its record_video option is "
+                "off), so every video frame would be black. Set num_record_episodes=0 to train without videos."
+            )
+        try:
+            render_out = camera.render()
+        except Exception as e:
+            raise RuntimeError(
+                "Rendering a video frame with the DexMachina camera failed (cause above), so the video would be "
+                "black or incomplete. Fix the cause, or set num_record_episodes=0 to train without videos."
+            ) from e
+        image = render_out[0] if isinstance(render_out, tuple) else render_out
+        if isinstance(image, torch.Tensor):
+            image = image.cpu().numpy()
+        image = to_uint8_rgb(image)
+        if image.ndim == IMAGE_NDIM:
+            image = image[np.newaxis, ...]
+        return image
 
     def set_curriculum(self, epoch):
         if hasattr(self.env, "set_curriculum"):
