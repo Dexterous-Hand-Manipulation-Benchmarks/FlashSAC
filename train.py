@@ -26,7 +26,7 @@ import tqdm
 from omegaconf import DictConfig, OmegaConf
 
 from flash_rl.agents import create_agent
-from flash_rl.common import create_logger
+from flash_rl.common import WandbTrainerLogger, create_logger
 from flash_rl.envs import create_envs
 from flash_rl.envs.dexmachina import TRACKING_METRICS, curriculum_epoch
 from flash_rl.evaluation import evaluate, record_video
@@ -336,22 +336,21 @@ def run(args: argparse.Namespace) -> None:
                             print(f"| {k:<18} | {prev_v:<18} | {new_v:<18} |")
                         print("=" * 62 + "\n")
 
-                        # WandB Table Logging
-                        curriculum_history_table.add_data(
-                            interaction_step,
-                            epoch,
-                            raw_gains.get("kp", 0.0),
-                            raw_gains.get("kv", 0.0),
-                            raw_gains.get("fr", 0.0),
-                            raw_gains.get("kp_lower", 0.0),
-                            raw_gains.get("kv_lower", 0.0),
-                            raw_gains.get("fr_lower", 0.0),
-                            rolling_task_rew,
-                            rolling_ep_len,
-                        )
-                        wandb.log(
-                            {"curriculum/update_table": curriculum_history_table}, step=env_step
-                        )
+                        # wandb.log needs a W&B run, which only WandbTrainerLogger starts
+                        if isinstance(logger, WandbTrainerLogger):
+                            curriculum_history_table.add_data(
+                                interaction_step,
+                                epoch,
+                                raw_gains.get("kp", 0.0),
+                                raw_gains.get("kv", 0.0),
+                                raw_gains.get("fr", 0.0),
+                                raw_gains.get("kp_lower", 0.0),
+                                raw_gains.get("kv_lower", 0.0),
+                                raw_gains.get("fr_lower", 0.0),
+                                rolling_task_rew,
+                                rolling_ep_len,
+                            )
+                            wandb.log({"curriculum/update_table": curriculum_history_table}, step=env_step)
 
                         last_logged_gains = raw_gains.copy()
 
