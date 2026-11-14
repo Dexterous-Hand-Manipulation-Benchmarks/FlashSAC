@@ -23,6 +23,7 @@ import hydra
 import numpy as np
 import torch
 import tqdm
+import wandb
 from omegaconf import DictConfig, OmegaConf
 
 from flash_rl.agents import create_agent
@@ -149,23 +150,24 @@ def run(args: argparse.Namespace) -> None:
 
     base_env = getattr(train_env, "env", getattr(train_env, "base_env", train_env))
 
-    import wandb
-
-    # Initialize a persistent WandB table for transition milestones
-    curriculum_history_table = wandb.Table(
-        columns=[
-            "Step",
-            "Epoch",
-            "kp",
-            "kv",
-            "fr",
-            "kp_lower",
-            "kv_lower",
-            "fr_lower",
-            "Task Rew",
-            "Ep Len",
-        ]
-    )
+    # wandb.log needs a W&B run, which only WandbTrainerLogger starts
+    curriculum_history_table = None
+    if isinstance(logger, WandbTrainerLogger):
+        # Initialize a persistent WandB table for transition milestones
+        curriculum_history_table = wandb.Table(
+            columns=[
+                "Step",
+                "Epoch",
+                "kp",
+                "kv",
+                "fr",
+                "kp_lower",
+                "kv_lower",
+                "fr_lower",
+                "Task Rew",
+                "Ep Len",
+            ]
+        )
     last_logged_gains = None
     printed = False
 
@@ -336,8 +338,7 @@ def run(args: argparse.Namespace) -> None:
                             print(f"| {k:<18} | {prev_v:<18} | {new_v:<18} |")
                         print("=" * 62 + "\n")
 
-                        # wandb.log needs a W&B run, which only WandbTrainerLogger starts
-                        if isinstance(logger, WandbTrainerLogger):
+                        if curriculum_history_table is not None:
                             curriculum_history_table.add_data(
                                 interaction_step,
                                 epoch,
