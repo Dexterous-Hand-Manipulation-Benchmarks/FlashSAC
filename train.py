@@ -17,21 +17,23 @@ import genesis as gs  # noqa: F401 (unused on purpose)
 import argparse
 import random
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 import hydra
 import numpy as np
 import torch
 import tqdm
 import wandb
+from gymnasium.vector import VectorEnv
 from omegaconf import DictConfig, OmegaConf
 
 from flash_rl.agents import create_agent
+from flash_rl.agents.base_agent import BaseAgent
 from flash_rl.common import WandbTrainerLogger, create_logger
 from flash_rl.envs import create_envs
 from flash_rl.envs.dexmachina import TRACKING_METRICS, curriculum_epoch
 from flash_rl.evaluation import evaluate, record_video
-from flash_rl.types import Tensor
+from flash_rl.types import NDArray, Tensor
 
 try:  # unified W&B logging when run from the dexhand-bench umbrella repo
     from dexhand_bench.wandb_logger import UniversalLogger
@@ -51,6 +53,39 @@ def compose_config(config_path: str, config_name: str, overrides: list[str]) -> 
     OmegaConf.resolve(cfg)
     OmegaConf.set_readonly(cfg, True)
     return cfg
+
+
+def seed_global_rngs(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)  # seeds the CUDA generators too
+
+
+def create_envs_and_agent(
+    cfg: DictConfig,
+) -> tuple[
+    VectorEnv[NDArray, NDArray, NDArray],
+    VectorEnv[NDArray, NDArray, NDArray],
+    VectorEnv[NDArray, NDArray, NDArray],
+    BaseAgent[Any],
+]:
+    seed_global_rngs(cfg.seed)
+    train_env, eval_env, record_env = create_envs(**cfg.env)
+    # DexMachina's curriculum reseeds the global RNGs with a fixed 42 while the env is built
+    # (dexmachina/envs/curriculum.py), so without this every seed would start from the same weights
+    # and exploration noise.
+    seed_global_rngs(cfg.seed)
+    # Gym spaces have their own RNG; the warm-up actions come from it.
+    train_env.action_space.seed(cfg.seed)
+
+    _, env_info = train_env.reset()
+    agent = create_agent(
+        observation_space=train_env.observation_space,
+        action_space=train_env.action_space,
+        env_info=env_info,
+        cfg=cfg.agent,
+    )
+    return train_env, eval_env, record_env, agent
 
 
 def run(args: argparse.Namespace) -> None:
@@ -78,15 +113,8 @@ def run(args: argparse.Namespace) -> None:
     # -----------------------------------
 
     ###############################
-    # seeding / configuration
+    # configuration
     ###############################
-
-    # Set random seed
-    random.seed(cfg.seed)
-    np.random.seed(cfg.seed)
-    torch.manual_seed(cfg.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(cfg.seed)
 
     if torch.cuda.is_available():
         torch.backends.cudnn.benchmark = True
@@ -94,25 +122,7 @@ def run(args: argparse.Namespace) -> None:
         torch.backends.cudnn.allow_tf32 = True
         torch.set_float32_matmul_precision("high")
 
-    #############################
-    # envs
-    #############################
-    train_env, eval_env, record_env = create_envs(**cfg.env)
-
-    observation_space = train_env.observation_space
-    action_space = train_env.action_space
-
-    #############################
-    # agent
-    #############################
-
-    _, env_info = train_env.reset()
-    agent = create_agent(
-        observation_space=observation_space,
-        action_space=action_space,
-        env_info=env_info,
-        cfg=cfg.agent,
-    )
+    train_env, eval_env, record_env, agent = create_envs_and_agent(cfg)
 
     #############################
     # train
