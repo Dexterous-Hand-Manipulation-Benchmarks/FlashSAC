@@ -162,3 +162,5 @@ tmp/**
 
 # saved checkpoints
 models/**
+runs/**
+.DS_Store
