@@ -168,9 +168,11 @@ class GenesisFlashSACWrapper(gym.Env):
     NaN safeguards, zero-overhead success rate calculations, and dynamic attribute forwarding.
     """
 
-    def __init__(self, env, rl_device="cuda:0"):
+    def __init__(self, vec_env, rl_device="cuda:0"):
         super().__init__()
-        self.env = env
+        self.vec_env = vec_env
+        # The BaseEnv under the vec env: train.py and eval_dexmachina.py read its attributes (curriculum, camera, demo).
+        self.env = vec_env.env
         self.sim_device = rl_device
         self._clip_actions = getattr(self.env, "action_clip", 1.0)
         self.num_envs = getattr(self.env, "num_envs", 1)
@@ -179,30 +181,6 @@ class GenesisFlashSACWrapper(gym.Env):
         self.num_obs = self.env.obs_dim
         self.num_actions = self.env.action_dim
         self.max_episode_steps = getattr(self.env, "max_episode_length", 200)
-
-        # Buffer to capture true pre-reset terminal observations
-        self._terminal_obs = torch.zeros(
-            (self.num_envs, self.num_obs), device=self.sim_device, dtype=torch.float32
-        )
-
-        # Intercept reset_idx to capture terminal observation before bodies/dofs reset
-        orig_reset_idx = self.env.reset_idx
-
-        def hooked_reset_idx(env_idxs, *args, **kwargs):
-            if len(env_idxs) > 0:
-                with torch.no_grad():
-                    term_obs = self.env.get_observations()
-                    term_policy = term_obs["policy"] if isinstance(term_obs, dict) else term_obs
-                    if not isinstance(term_policy, torch.Tensor):
-                        term_policy = torch.tensor(term_policy, device=self.sim_device, dtype=torch.float32)
-                    else:
-                        term_policy = term_policy.to(self.sim_device, dtype=torch.float32)
-                    if torch.isnan(term_policy).any():
-                        term_policy = torch.nan_to_num(term_policy, nan=0.0, posinf=0.0, neginf=0.0)
-                    self._terminal_obs[env_idxs] = term_policy[env_idxs]
-            return orig_reset_idx(env_idxs, *args, **kwargs)
-
-        self.env.reset_idx = hooked_reset_idx
 
         # Gymnasium Spaces
         self.observation_space = gym.spaces.Box(
@@ -213,20 +191,7 @@ class GenesisFlashSACWrapper(gym.Env):
         )
 
     def reset(self, seed=None, options=None):
-        obs_dict, extras = self.env.reset()
-        obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
-
-        if not isinstance(obs, torch.Tensor):
-            obs = torch.tensor(obs, device=self.sim_device, dtype=torch.float32)
-        else:
-            obs = obs.to(self.sim_device, dtype=torch.float32)
-
-        if torch.isnan(obs).any():
-            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
-
-        self._terminal_obs.copy_(obs)
-
-        return obs, extras
+        return self.vec_env.reset()
 
     def step(self, actions):
         if not isinstance(actions, torch.Tensor):
@@ -243,31 +208,13 @@ class GenesisFlashSACWrapper(gym.Env):
 
         actions = torch.clamp(actions, -self._clip_actions, self._clip_actions)
 
-        obs_dict, rew, terminated, truncated, extras = self.env.step(actions)
-        obs = obs_dict["policy"] if isinstance(obs_dict, dict) else obs_dict
+        obs, rew, terminated, truncated, vec_info = self.vec_env.step(actions)
 
-        if not isinstance(obs, torch.Tensor):
-            obs = torch.tensor(obs, device=self.sim_device, dtype=torch.float32)
-        if not isinstance(rew, torch.Tensor):
-            rew = torch.tensor(rew, device=self.sim_device, dtype=torch.float32)
-        if not isinstance(terminated, torch.Tensor):
-            terminated = torch.tensor(terminated, device=self.sim_device, dtype=torch.bool)
-        if not isinstance(truncated, torch.Tensor):
-            truncated = torch.tensor(truncated, device=self.sim_device, dtype=torch.bool)
-
-        # In-flight NaN safeguards
-        if torch.isnan(obs).any():
-            obs = torch.nan_to_num(obs, nan=0.0, posinf=0.0, neginf=0.0)
+        # dexmachina only replaces the rewards of NaN envs (base_env.py:734-736); kept from the previous wrapper.
         if torch.isnan(rew).any():
             rew = torch.nan_to_num(rew, nan=0.0, posinf=0.0, neginf=0.0)
 
-        infos = {}
-        dones = terminated | truncated
-        non_reset_mask = ~dones
-        if non_reset_mask.any():
-            self._terminal_obs[non_reset_mask] = obs[non_reset_mask]
-
-        infos["final_obs"] = self._terminal_obs.clone()
+        infos = {"final_obs": vec_info["final_obs"]}
 
         # --- High-Speed GPU Online Success & Tracking Error Metrics ---
         if hasattr(self.env, "rew_dict") and isinstance(self.env.rew_dict, dict):
@@ -279,8 +226,7 @@ class GenesisFlashSACWrapper(gym.Env):
                 val = getattr(self.env, param_name)
                 infos[f"env/{param_name}"] = val.mean().item() if isinstance(val, torch.Tensor) else float(val)
 
-        if "log" in extras:
-            infos["episode_info"] = extras["log"]
+        infos["episode_info"] = vec_info["log"]
 
         return obs, rew, terminated, truncated, infos
 
@@ -315,16 +261,15 @@ class GenesisFlashSACWrapper(gym.Env):
         return getattr(self.env, name)
 
     def close(self):
-        if hasattr(self.env, "close"):
-            self.env.close()
+        self.vec_env.close()
 
 
 def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
-    """Build a Dexmachina BaseEnv from FlashSAC's Hydra env kwargs."""
+    """Build a DexMachinaVecEnv from FlashSAC's Hydra env kwargs."""
     from dexmachina.envs.constructors import parse_clip_string
-    from dexmachina.envs.factory import make_env
     from dexmachina.envs.rewards import get_reward_cfg
     from dexmachina.envs.spec import EnvSpec
+    from dexmachina.envs.vec_env import DexMachinaVecEnv
 
     config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
     defaults = EnvSpec()
@@ -379,7 +324,7 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
 
     spec = replace(defaults, **spec_values)
     # Reward keys without a spec field (e.g. force_penalty, task_rew_weight) reach the RewardModule only as overrides.
-    return make_env(spec, device, {} if rewards is None else rewards)
+    return DexMachinaVecEnv.from_spec(spec, device, {} if rewards is None else dict(rewards))
 
 
 # Backwards Compatibility Aliases
