@@ -627,7 +627,9 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             if self._cfg.asymmetric_observation and self.critic_obs_normalizer is not None:
                 critic_obs_norm_path = os.path.join(path, "critic_obs_normalizer.pt")
                 if os.path.exists(critic_obs_norm_path):
-                    self.critic_obs_normalizer.load_state_dict(torch.load(critic_obs_norm_path, map_location=self._device))
+                    self.critic_obs_normalizer.load_state_dict(
+                        torch.load(critic_obs_norm_path, map_location=self._device)
+                    )
 
         print(f"\033[32m[FlashSAC]\033[0m Successfully loaded checkpoint from {path}.")
 

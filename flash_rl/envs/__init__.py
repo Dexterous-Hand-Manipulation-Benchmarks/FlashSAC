@@ -86,7 +86,8 @@ def create_envs(
         assert "use_push_randomization" in kwargs
         train_env = make_mujoco_playground_env(
             env_name=env_name, seed=seed, num_envs=num_train_envs, max_episode_steps=max_episode_steps,
-            use_domain_randomization=kwargs["use_domain_randomization"], use_push_randomization=kwargs["use_push_randomization"],
+            use_domain_randomization=kwargs["use_domain_randomization"],
+            use_push_randomization=kwargs["use_push_randomization"],
         )
         eval_env = make_mujoco_playground_env(
             env_name=env_name, seed=seed, num_envs=num_eval_envs, max_episode_steps=max_episode_steps,
@@ -178,7 +179,9 @@ def create_vec_env(
         predefined_max_episode_steps = extract_predefined_max_episode_steps(env)
         if max_episode_steps is None or max_episode_steps <= 0:
             if predefined_max_episode_steps is None:
-                raise ValueError("`max_episode_steps` must be either defined in the environment or provided explicitly.")
+                raise ValueError(
+                    "`max_episode_steps` must be either defined in the environment or provided explicitly."
+                )
             max_episode_steps = predefined_max_episode_steps
 
         env = TimeLimit(env, max_episode_steps)

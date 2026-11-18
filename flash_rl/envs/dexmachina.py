@@ -266,10 +266,11 @@ class GenesisFlashSACWrapper(gym.Env):
 
 def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
     """Build a DexMachinaVecEnv from FlashSAC's Hydra env kwargs."""
-    from dexmachina.envs.constructors import parse_clip_string
-    from dexmachina.envs.rewards import get_reward_cfg
-    from dexmachina.envs.spec import EnvSpec
-    from dexmachina.envs.vec_env import DexMachinaVecEnv
+    # dexmachina is optional: FlashSAC runs other envs without it.
+    from dexmachina.envs.constructors import parse_clip_string  # noqa: PLC0415
+    from dexmachina.envs.rewards import get_reward_cfg  # noqa: PLC0415
+    from dexmachina.envs.spec import EnvSpec  # noqa: PLC0415
+    from dexmachina.envs.vec_env import DexMachinaVecEnv  # noqa: PLC0415
 
     config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
     defaults = EnvSpec()

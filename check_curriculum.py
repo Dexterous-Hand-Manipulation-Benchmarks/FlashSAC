@@ -3,12 +3,14 @@ import os
 # Imported first on purpose: training misbehaved without it (cause not pinned down).
 import genesis as gs  # noqa: F401 (unused on purpose)
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# isort: split
 
 import hydra
 from omegaconf import OmegaConf
 
 from flash_rl.envs import create_envs
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 OmegaConf.register_new_resolver("eval", lambda s: eval(s), replace=True)
 

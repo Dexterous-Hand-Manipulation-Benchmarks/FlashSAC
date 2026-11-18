@@ -9,9 +9,22 @@ import wandb
 from omegaconf import OmegaConf
 
 # isort: split
-# Force global initialization of Genesis and make gs.init idempotent
 import genesis as gs
+from dexmachina.envs.base_env import BaseEnv
+from dexmachina.eval.compute_add import compute_for_eval
 
+from flash_rl.agents import create_agent
+from flash_rl.envs import create_envs
+from flash_rl.envs.dexmachina import (
+    IMAGE_NDIM,
+    REPORTED_INTERACTION_STEPS,
+    RGB_CHANNELS,
+    compose_eval_config,
+    curriculum_epoch,
+    to_uint8_rgb,
+)
+
+# Force global initialization of Genesis and make gs.init idempotent
 _orig_gs_init = gs.init
 
 
@@ -25,19 +38,6 @@ def _safe_gs_init(*args, **kwargs):
 
 
 gs.init = _safe_gs_init
-
-from dexmachina.envs.base_env import BaseEnv
-
-from flash_rl.agents import create_agent
-from flash_rl.envs import create_envs
-from flash_rl.envs.dexmachina import (
-    IMAGE_NDIM,
-    REPORTED_INTERACTION_STEPS,
-    RGB_CHANNELS,
-    compose_eval_config,
-    curriculum_epoch,
-    to_uint8_rgb,
-)
 
 GRAYSCALE_NDIM = 2
 MIN_FRAME_SIDE_PX = 10
@@ -113,7 +113,7 @@ def video_fps(uenv):
 
 def write_video_file(frames, video_path, fps):
     try:
-        from moviepy import ImageSequenceClip
+        from moviepy import ImageSequenceClip  # noqa: PLC0415  (optional: falls back to imageio)
         clip_obj = ImageSequenceClip(frames, fps=fps)
         clip_obj.write_videofile(video_path, logger=None)
         return True
@@ -121,7 +121,7 @@ def write_video_file(frames, video_path, fps):
         pass
 
     try:
-        import imageio
+        import imageio  # noqa: PLC0415  (optional: the fallback video writer)
         writer = imageio.get_writer(video_path, fps=fps, codec="libx264")
         for f in frames:
             writer.append_data(f)
@@ -235,8 +235,6 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
         f"{metric_prefix}/ep_length": float(ep_len),
     }
 
-    from dexmachina.eval.compute_add import compute_for_eval
-
     stats_path = os.path.join(out_dir, f"{file_tag}_add_stats.json")
     add_npy_path = os.path.join(out_dir, f"{file_tag}_add.npy")
     try:
@@ -278,7 +276,9 @@ def main():
     parser.add_argument("--config_name", type=str, default="flashSAC_base")
     parser.add_argument("--step", type=int, default=None)
     parser.add_argument("--project", type=str, default="dexmachina_clean")
-    parser.add_argument("--entity", type=str, default=None, help="W&B entity (default: $WANDB_ENTITY / your W&B default)")
+    parser.add_argument(
+        "--entity", type=str, default=None, help="W&B entity (default: $WANDB_ENTITY / your W&B default)"
+    )
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--overrides", action="append", default=[])
     parser.add_argument("--video", action=argparse.BooleanOptionalAction, default=True,
@@ -332,7 +332,9 @@ def main():
     )
     log_payload.update(m_assisted)
     if vid_assisted:
-        log_payload["eval/assisted/video"] = wandb.Video(vid_assisted, fps=video_fps(uenv), format="mp4", caption=f"Assisted Step {args.step}")
+        log_payload["eval/assisted/video"] = wandb.Video(
+            vid_assisted, fps=video_fps(uenv), format="mp4", caption=f"Assisted Step {args.step}"
+        )
 
     # PASS 2: UNASSISTED EVALUATION (eval/* benchmark)
     if target_obj is not None and getattr(target_obj, "actuated", False):
@@ -349,7 +351,9 @@ def main():
     )
     log_payload.update(m_unassisted)
     if vid_unassisted:
-        log_payload["eval/video"] = wandb.Video(vid_unassisted, fps=video_fps(uenv), format="mp4", caption=f"Benchmark Step {args.step}")
+        log_payload["eval/video"] = wandb.Video(
+            vid_unassisted, fps=video_fps(uenv), format="mp4", caption=f"Benchmark Step {args.step}"
+        )
 
     # WANDB LOGGING
     if args.wandb_run_id:

@@ -170,7 +170,8 @@ class TorchUniformBuffer(BaseBuffer):
             self._terminateds[idxs] = n_step_prev_transition["terminated"].to(self._terminateds.dtype)
             self._truncateds[idxs] = n_step_prev_transition["truncated"].to(self._truncateds.dtype)
             if "effective_gamma" in n_step_prev_transition:
-                self._effective_gammas[idxs] = n_step_prev_transition["effective_gamma"].to(self._effective_gammas.dtype)
+                effective_gamma = n_step_prev_transition["effective_gamma"]
+                self._effective_gammas[idxs] = effective_gamma.to(self._effective_gammas.dtype)
             else:
                 self._effective_gammas[idxs] = self._gamma**self._n_step
 
