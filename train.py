@@ -24,6 +24,7 @@ import numpy as np
 import torch
 import tqdm
 import wandb
+from gymnasium.spaces import Space
 from gymnasium.vector import VectorEnv
 from omegaconf import DictConfig, OmegaConf
 
@@ -59,6 +60,11 @@ def seed_global_rngs(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)  # seeds the CUDA generators too
+
+
+def warmup_actions(action_space: Space[NDArray], num_envs: int) -> NDArray:
+    """One uniform action per env: a single `action_space.sample()` would give every env the same trajectory."""
+    return np.array([action_space.sample() for _ in range(num_envs)])
 
 
 def create_envs_and_agent(
@@ -200,9 +206,7 @@ def run(args: argparse.Namespace) -> None:
         if agent.can_start_training() and transition is not None:
             actions = agent.sample_actions(interaction_step, prev_transition=transition, training=True)
         else:
-            #actions = train_env.action_space.sample()
-            # Ensure random actions for all parallel envs.
-            actions = np.array([train_env.action_space.sample() for _ in range(cfg.num_train_envs)])
+            actions = warmup_actions(train_env.action_space, cfg.num_train_envs)
 
         assert actions is not None
         if not isinstance(actions, torch.Tensor):
