@@ -27,6 +27,8 @@ from flash_rl.agents.utils.scheduler import warmup_cosine_decay_scheduler
 from flash_rl.buffers.torch_buffer import TorchUniformBuffer
 from flash_rl.types import NDArray, Tensor
 
+OBS_NORMALIZER_FILENAME = "obs_normalizer.pt"
+
 
 @dataclass
 class FlashSACConfig:
@@ -586,7 +588,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         if self.reward_normalizer is not None:
             self.reward_normalizer.save(os.path.join(path, "reward_normalizer.pt"))
         if self.obs_normalizer is not None:
-            torch.save(self.obs_normalizer.state_dict(), os.path.join(path, "obs_normalizer.pt"))
+            torch.save(self.obs_normalizer.state_dict(), os.path.join(path, OBS_NORMALIZER_FILENAME))
             if self._cfg.asymmetric_observation and self.critic_obs_normalizer is not None:
                 torch.save(self.critic_obs_normalizer.state_dict(), os.path.join(path, "critic_obs_normalizer.pt"))
 
@@ -621,7 +623,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             self.reward_normalizer.load(os.path.join(path, "reward_normalizer.pt"))
 
         if self.obs_normalizer is not None:
-            obs_norm_path = os.path.join(path, "obs_normalizer.pt")
+            obs_norm_path = os.path.join(path, OBS_NORMALIZER_FILENAME)
             if os.path.exists(obs_norm_path):
                 self.obs_normalizer.load_state_dict(torch.load(obs_norm_path, map_location=self._device))
             if self._cfg.asymmetric_observation and self.critic_obs_normalizer is not None:
