@@ -343,7 +343,12 @@ def dexmachina_spec(
         if len(parts) == CLIP_RANGE_PARTS:
             clip_str = f"{clip_str}-{DEFAULT_SUBJECT_TAKE}"
         elif len(parts) != CLIP_ID_PARTS:
-            clip_str = BOX_CLIP
+            raise ValueError(
+                f"env clip {clip_str!r} is not a dexmachina clip id: it has {len(parts)} '-'-separated parts, "
+                f"expected {CLIP_RANGE_PARTS} (object-start-end) or {CLIP_ID_PARTS} (object-start-end-subject-take). "
+                "Training on another clip than the one asked for would go unnoticed. Fix env.clip, e.g. "
+                f"{BOX_CLIP!r}."
+            )
 
     spec_values["clip"] = clip_str
     parse_clip_string(clip_str)
