@@ -1,28 +1,50 @@
 import argparse
 import json
+import math
 import os
+import re
 from collections import defaultdict
+from collections.abc import MutableMapping, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any, cast
 
 import numpy as np
 import torch
+from omegaconf import DictConfig, OmegaConf
+
 import wandb
-from omegaconf import OmegaConf
 
 # isort: split
 import genesis as gs
+import gymnasium as gym
 from dexmachina.envs.base_env import BaseEnv
+from dexmachina.envs.evaluation import EvalScore, rollout_episode, save_trajectory, score
+from dexmachina.envs.factory import make_eval_env, task_hash
+from dexmachina.envs.run_spec import (
+    RUN_SPEC_FILENAME,
+    DexmachinaState,
+    current_dexmachina_state,
+    load_run_spec,
+)
 from dexmachina.eval.compute_add import compute_for_eval
+from genesis.utils import set_random_seed  # pyright: ignore[reportMissingTypeStubs, reportUnknownVariableType]
 
 from flash_rl.agents import create_agent
+from flash_rl.agents.base_agent import BaseAgent
+from flash_rl.agents.flashSAC.agent import OBS_NORMALIZER_FILENAME
+from flash_rl.common.torch_precision import enable_fast_matmul
 from flash_rl.envs import create_envs
 from flash_rl.envs.dexmachina import (
     IMAGE_NDIM,
     REPORTED_INTERACTION_STEPS,
     RGB_CHANNELS,
+    RUN_CONFIG_FILENAME,
     compose_eval_config,
     curriculum_epoch,
     to_uint8_rgb,
 )
+from flash_rl.types import Tensor as FlashTensor
 
 # Force global initialization of Genesis and make gs.init idempotent
 _orig_gs_init = gs.init
@@ -48,6 +70,23 @@ DEFAULT_VIDEO_FPS = 30
 RENDER_ERRORS = (gs.GenesisException, RuntimeError)
 # Success = per-frame ADD below the threshold, in metres.
 ADD_SUCCESS_THRESHOLDS_M = {"success_2cm": 0.02, "success_5cm": 0.05}
+
+# One floor file per (eval task, dexmachina commit): what the zero action scores on the eval protocol.
+FLOOR_FILENAME = "floor_{task_hash}_{sha}.json"
+FLOOR_POLICY = "zero"
+FLOOR_KEYS = frozenset(
+    {"hand", "clip", "task_hash", "dexmachina_sha", "dexmachina_dirty", "policy", "device", "per_seed_auc_add", "auc_add"}
+)
+# The eval agent never samples from or trains on its replay buffer, so it gets the smallest one.
+EVAL_BUFFER_LENGTH = 1
+# Not "eval/": the in-training evaluation logs its own eval/* keys, and the two must not share a chart.
+BENCHMARK_PREFIX = "benchmark"
+TRAJECTORY_FILENAME = "benchmark_trajectory_{sha}.npz"
+SHORT_SHA_LENGTH = 12
+# train.py names a checkpoint directory step<interaction step>.
+CHECKPOINT_DIRNAME = re.compile(r"step(\d+)")
+# Arguments of the old protocol; the new one takes everything from the run's saved files.
+OLD_PROTOCOL_ARGUMENTS = ("step", "num_episodes", "config_path", "config_name", "overrides", "video")
 
 _original_init = BaseEnv.__init__
 
@@ -267,7 +306,239 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
     return metrics, video_path
 
 
-def main():
+@dataclass(frozen=True)
+class Floor:
+    auc_add: float
+    device: str
+
+
+@dataclass(frozen=True)
+class BenchmarkEvaluation:
+    """One checkpoint scored on the shared eval protocol, with what is needed to compare it across runs."""
+
+    eval_score: EvalScore
+    task_hash: str
+    saved_state: DexmachinaState
+    evaluated_state: DexmachinaState
+    floor: "Floor"
+    checkpoint_step: int
+    env_step: int
+
+    def metrics(self) -> dict[str, float]:
+        """What goes into the W&B history."""
+        result = self.eval_score
+        metrics = {
+            "auc_add": result.auc_add,
+            "auc_add_of_mean": result.auc_add_of_mean,
+            "mean_add": result.mean_add,
+            "success_2cm": result.success_2cm,
+            "success_5cm": result.success_5cm,
+            "nan_rate": result.nan_rate,
+            "drop_rate": result.drop_rate,
+            "floor/auc_add": self.floor.auc_add,
+            "checkpoint_step": float(self.checkpoint_step),
+            "env_step": float(self.env_step),
+        }
+        metrics.update({f"auc_add_part/{part}": value for part, value in result.auc_add_part.items()})
+        return {f"{BENCHMARK_PREFIX}/{name}": value for name, value in metrics.items()}
+
+    def provenance(self) -> dict[str, str | bool]:
+        """What goes into the W&B run summary: it identifies the evaluation rather than being plotted."""
+        provenance: dict[str, str | bool] = {
+            "task_hash": self.task_hash,
+            "floor_device": self.floor.device,
+            "dexmachina_sha/saved": self.saved_state.sha,
+            "dexmachina_sha/evaluated": self.evaluated_state.sha,
+            "dexmachina_dirty/saved": self.saved_state.dirty,
+            "dexmachina_dirty/evaluated": self.evaluated_state.dirty,
+        }
+        return {f"{BENCHMARK_PREFIX}/{name}": value for name, value in provenance.items()}
+
+
+def check_observation_normalizer(checkpoint_dir: Path, normalize_observation: bool) -> None:
+    """The saved config and the checkpoint must agree on the normalizer, because agent.load skips a missing file.
+
+    Only the observation normalizer is checked here; the actor weights are read by agent.load, which fails on a
+    missing file itself.
+    """
+    has_file = (checkpoint_dir / OBS_NORMALIZER_FILENAME).is_file()
+    if has_file and not normalize_observation:
+        raise ValueError(
+            f"{checkpoint_dir} has an {OBS_NORMALIZER_FILENAME}, but the run's saved config has "
+            "normalize_observation false. The agent would see raw observations although it trained on normalized "
+            "ones, and its actions would be wrong without any error. Likely cause: the config.yaml next to the "
+            "checkpoint is not the one of this run. Use the config.yaml the run saved."
+        )
+    if normalize_observation and not has_file:
+        raise FileNotFoundError(
+            f"{checkpoint_dir / OBS_NORMALIZER_FILENAME} does not exist, but the run's saved config has "
+            "normalize_observation true. agent.load would skip the missing file and evaluate with an untrained "
+            "normalizer, so the score would be wrong without any error. Point at a checkpoint directory that "
+            "agent.save wrote, or at the right run."
+        )
+
+
+def checkpoint_step(checkpoint_dir: Path) -> int:
+    match = CHECKPOINT_DIRNAME.fullmatch(checkpoint_dir.name)
+    if match is None:
+        raise ValueError(
+            f"{checkpoint_dir.name!r} is not a checkpoint directory name (step<interaction step>, as train.py "
+            "writes it). The env step of the evaluation is computed from that number. Point at a step directory "
+            "of the run, not at the run root."
+        )
+    return int(match.group(1))
+
+
+def read_floor(floor_dir: Path, hand: str, clip: str, task: str, evaluated_state: DexmachinaState) -> Floor:
+    """The zero-action ADD-AUC measured for this task at this dexmachina commit; refuses a file that is not that."""
+    path = floor_dir / FLOOR_FILENAME.format(task_hash=task, sha=evaluated_state.sha)
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{path} does not exist. Every eval logs the floor (what a zero action scores) for its task and "
+            f"dexmachina commit, and the floor of another task or commit is not the same number. Measure the floor "
+            f"for {hand} / {clip} (task {task}) at dexmachina {evaluated_state.sha[:12]} and save it under that "
+            f"name, with the keys {sorted(FLOOR_KEYS)}."
+        )
+    raw: object = json.loads(path.read_text())
+    content = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
+    if content.keys() != FLOOR_KEYS:
+        raise ValueError(
+            f"{path} must be a JSON object with exactly the keys {sorted(FLOOR_KEYS)}, got: {raw!r}. Rewrite it "
+            "with the floor measurement."
+        )
+    expected = {
+        "hand": hand, "clip": clip, "task_hash": task, "dexmachina_sha": evaluated_state.sha,
+        "dexmachina_dirty": False, "policy": FLOOR_POLICY,
+    }  # fmt: skip
+    wrong = {key: content[key] for key, value in expected.items() if content[key] != value}
+    if wrong:
+        raise ValueError(
+            f"{path} is not the floor of this evaluation: {wrong} differ from the expected {expected}. A floor "
+            "of another task, commit, policy or a dirty checkout would make the comparison meaningless. Measure the "
+            "floor again with the zero policy on a clean checkout."
+        )
+    per_seed = content["per_seed_auc_add"]
+    values: list[Any] = [*cast(list[Any], per_seed), content["auc_add"]] if isinstance(per_seed, list) else []
+    numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in values)
+    if len(values) < 2 or not numbers or len(set(values)) != 1:  # noqa: PLR2004  (one seed value and the mean)
+        raise ValueError(
+            f"{path} has per_seed_auc_add {per_seed!r} and auc_add {content['auc_add']!r}. The zero action is "
+            "deterministic, so every seed gives the same finite number and auc_add equals it. Different values mean "
+            "the floor was measured under another protocol or the env is not deterministic: find out which before "
+            "using it."
+        )
+    return Floor(auc_add=float(content["auc_add"]), device=str(content["device"]))
+
+
+def build_eval_agent(
+    agent_config: DictConfig, obs_dim: int, action_dim: int, action_clip: float, device: str
+) -> BaseAgent[Any]:
+    """The agent of a run's saved config, on `device`, for an env with these observation and action sizes."""
+    if agent_config.asymmetric_observation:
+        raise ValueError(
+            "The run's saved config has asymmetric_observation true. The evaluation hands the agent the env's "
+            "policy observation only, so it would act on a different input than in training. Asymmetric "
+            "observations are not supported by the benchmark evaluation; evaluate with --old-protocol or add support."
+        )
+    # The replay buffer is allocated at its configured size (1M transitions in the reported runs) and never used
+    # here, and the optimizer state is not needed to act.
+    eval_overrides = OmegaConf.create(
+        {
+            "device_type": device,
+            "buffer_device_type": device,
+            "buffer_max_length": EVAL_BUFFER_LENGTH,
+            "buffer_min_length": EVAL_BUFFER_LENGTH,
+            "load_optimizer": False,
+        }
+    )
+    observation_space = gym.spaces.Box(low=-np.inf, high=np.inf, shape=(obs_dim,), dtype=np.float32)
+    action_space = gym.spaces.Box(low=-action_clip, high=action_clip, shape=(action_dim,), dtype=np.float32)
+    return create_agent(
+        observation_space=observation_space,
+        action_space=action_space,
+        env_info={},
+        cfg=OmegaConf.merge(agent_config, eval_overrides),
+    )
+
+
+def deterministic_actions(agent: BaseAgent[Any], observations: torch.Tensor, device: str) -> torch.Tensor:
+    """The agent's mean action (temperature 0); the observation normalizer is not updated."""
+    transition: MutableMapping[str, FlashTensor] = {"next_observation": observations}
+    actions = agent.sample_actions(interaction_step=0, prev_transition=transition, training=False)
+    return torch.as_tensor(actions, dtype=torch.float32, device=device)
+
+
+def evaluate_benchmark(checkpoint_dir: Path, device: str, floor_dir: Path | None = None) -> BenchmarkEvaluation:
+    """Scores one checkpoint on the shared eval protocol, from what its run saved.
+
+    `checkpoint_dir` is a step directory written by agent.save; the run's env_spec.json and config.yaml sit in its
+    parent, and so do the floor files unless `floor_dir` says otherwise. Genesis must be initialised for `device`.
+    The agent acts with the mean of its policy (temperature 0, tanh of the mean) and a frozen observation normalizer.
+    The trajectory is saved next to the checkpoint as `benchmark_trajectory_<short dexmachina sha>.npz`.
+    """
+    run_dir = checkpoint_dir.parent
+    for filename in (RUN_SPEC_FILENAME, RUN_CONFIG_FILENAME):
+        if not (run_dir / filename).is_file():
+            raise FileNotFoundError(
+                f"{run_dir / filename} does not exist. Runs write it into their checkpoint root when they start, so "
+                "this run predates it or the directory is wrong. Point at a step directory of a newer run, or "
+                "evaluate this run with --old-protocol."
+            )
+    step = checkpoint_step(checkpoint_dir)
+    run_spec = load_run_spec(run_dir)
+    config = OmegaConf.load(run_dir / RUN_CONFIG_FILENAME)
+    agent_config = cast(DictConfig, config.agent)
+    check_observation_normalizer(checkpoint_dir, bool(agent_config.normalize_observation))
+
+    saved_state = DexmachinaState(run_spec.dexmachina_sha, run_spec.dexmachina_dirty)
+    evaluated_state = current_dexmachina_state()
+    if evaluated_state.sha != saved_state.sha:
+        print(
+            f"[WARNING] The run was trained with dexmachina {saved_state.sha[:12]} but is evaluated with "
+            f"{evaluated_state.sha[:12]}. The env may behave differently from training, and the score is only "
+            "comparable with other evaluations at this commit."
+        )
+    if saved_state.dirty or evaluated_state.dirty:
+        print(
+            f"[WARNING] dexmachina had uncommitted changes (training: {saved_state.dirty}, evaluation: "
+            f"{evaluated_state.dirty}), so its commit does not say which code ran."
+        )
+    spec = run_spec.spec
+    task = task_hash(spec)
+    floor = read_floor(floor_dir or run_dir, spec.hand, spec.clip, task, evaluated_state)
+
+    enable_fast_matmul()
+    set_random_seed(spec.seed)
+    env: Any = make_eval_env(spec, device)
+    agent = build_eval_agent(agent_config, int(env.obs_dim), int(env.action_dim), float(env.action_clip), device)
+    agent.load(str(checkpoint_dir))
+
+    trajectory = rollout_episode(
+        env, lambda obs: deterministic_actions(agent, obs, device), spec.hand, spec.clip, task, evaluated_state.sha
+    )
+    sha = evaluated_state.sha[:SHORT_SHA_LENGTH]
+    save_trajectory(checkpoint_dir / TRAJECTORY_FILENAME.format(sha=sha), trajectory)
+    return BenchmarkEvaluation(
+        score(trajectory), task, saved_state, evaluated_state, floor, step, step * spec.num_envs
+    )
+
+
+def run_benchmark(args: argparse.Namespace) -> None:
+    backend: Any = gs.cpu if args.device.startswith("cpu") else gs.gpu  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportAttributeAccessIssue]
+    gs.init(backend=backend, logging_level="warning")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
+    evaluation = evaluate_benchmark(Path(args.checkpoint_path).resolve(), args.device)
+    metrics = evaluation.metrics()
+    for name, value in {**metrics, **evaluation.provenance()}.items():
+        print(f"{name}: {value}")
+    if args.wandb_run_id:
+        run = wandb.init(id=args.wandb_run_id, project=args.project, entity=args.entity, resume="allow")
+        wandb.define_metric(f"{BENCHMARK_PREFIX}/*", step_metric=f"{BENCHMARK_PREFIX}/env_step")
+        wandb.log(metrics)
+        run.summary.update(evaluation.provenance())  # pyright: ignore[reportUnknownMemberType]
+        wandb.finish()
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint_path", type=str, required=True)
     parser.add_argument("--wandb_run_id", type=str, default=None)
@@ -284,7 +555,29 @@ def main():
     parser.add_argument("--video", action=argparse.BooleanOptionalAction, default=True,
                         help="record eval videos from a front camera; --no-video where Genesis cannot render "
                              "(macOS, machines without a display)")
-    args = parser.parse_args()
+    parser.add_argument("--old-protocol", action="store_true",
+                        help="the earlier assisted/unassisted evaluation, built from configs/ and the overrides; "
+                             "for runs without env_spec.json and config.yaml")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if args.old_protocol:
+        run_old_protocol(args)
+        return
+    given = [name for name in OLD_PROTOCOL_ARGUMENTS if getattr(args, name) != parser.get_default(name)]
+    if given:
+        raise SystemExit(
+            f"error: --{', --'.join(given)} only apply to --old-protocol. The default evaluation takes the env and "
+            "the agent from the files the run saved (env_spec.json, config.yaml) and the step from the checkpoint "
+            "directory name, so these arguments would be ignored. Drop them, or add --old-protocol."
+        )
+    run_benchmark(args)
+
+
+def run_old_protocol(args: argparse.Namespace) -> None:
     if args.video:
         enable_video_recording()
 
