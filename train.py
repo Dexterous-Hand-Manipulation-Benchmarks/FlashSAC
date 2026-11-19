@@ -32,6 +32,7 @@ from omegaconf import DictConfig, OmegaConf
 from flash_rl.agents import create_agent
 from flash_rl.agents.base_agent import BaseAgent
 from flash_rl.common import WandbTrainerLogger, create_logger
+from flash_rl.common.torch_precision import enable_fast_matmul
 from flash_rl.envs import create_envs
 from flash_rl.envs.dexmachina import TRACKING_METRICS, curriculum_epoch, save_run_files
 from flash_rl.evaluation import evaluate, record_video
@@ -123,11 +124,7 @@ def run(args: argparse.Namespace) -> None:
     # configuration
     ###############################
 
-    if torch.cuda.is_available():
-        torch.backends.cudnn.benchmark = True
-        torch.backends.cuda.matmul.allow_tf32 = True
-        torch.backends.cudnn.allow_tf32 = True
-        torch.set_float32_matmul_precision("high")
+    enable_fast_matmul()
 
     train_env, eval_env, record_env, agent = create_envs_and_agent(cfg)
 
