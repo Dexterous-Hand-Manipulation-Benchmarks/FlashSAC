@@ -1,13 +1,18 @@
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, fields, replace
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import gymnasium as gym
 import hydra
 import numpy as np
 import torch
 from omegaconf import DictConfig, OmegaConf
+
+if TYPE_CHECKING:
+    from dexmachina.envs.spec import EnvSpec
+    from dexmachina.envs.vec_env import DexMachinaVecEnv
 
 IMAGE_NDIM = 3
 RGB_CHANNELS = 3
@@ -38,6 +43,8 @@ OBJ_ROT_BETA_KEY = "obj_rot_beta"
 OBJ_ARTI_BETA_KEY = "obj_arti_beta"
 # Reward keys dexmachina's RewardModule reads with cfg.get (envs/rewards.py) but get_reward_cfg() leaves out.
 EXTRA_REWARD_KEYS = frozenset({"bc_wrist_weight"})
+
+RUN_CONFIG_FILENAME = "config.yaml"
 
 # Names under which the wrapper reports TrackingErrors in its infos.
 SUCCESS_2CM_METRIC = "eval/success_2cm"
@@ -190,6 +197,23 @@ class GenesisFlashSACWrapper(gym.Env):
             low=-self._clip_actions, high=self._clip_actions, shape=(self.num_actions,), dtype=np.float32
         )
 
+    def _built_from(self) -> "tuple[EnvSpec, dict[str, Any]]":
+        if self.vec_env.spec is None or self.vec_env.reward_overrides is None:
+            raise ValueError(
+                "The vec env was not built with DexMachinaVecEnv.from_spec, so it does not know its EnvSpec. "
+                "Build it with from_spec (make_dexmachina_env does) so that the run can save its spec."
+            )
+        return self.vec_env.spec, self.vec_env.reward_overrides
+
+    @property
+    def env_spec(self) -> "EnvSpec":
+        """The EnvSpec the env was built from (gym.Env's own `spec` is a different thing)."""
+        return self._built_from()[0]
+
+    @property
+    def reward_overrides(self) -> dict[str, Any]:
+        return self._built_from()[1]
+
     def reset(self, seed=None, options=None):
         return self.vec_env.reset()
 
@@ -264,13 +288,14 @@ class GenesisFlashSACWrapper(gym.Env):
         self.vec_env.close()
 
 
-def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
-    """Build a DexMachinaVecEnv from FlashSAC's Hydra env kwargs."""
+def dexmachina_spec(
+    num_envs: int, hydra_kwargs: Mapping[str, Any], seed: int, env_name: str = ""
+) -> "tuple[EnvSpec, dict[str, Any]]":
+    """FlashSAC's Hydra env kwargs as dexmachina's EnvSpec, and the reward overrides that have no EnvSpec field."""
     # dexmachina is optional: FlashSAC runs other envs without it.
     from dexmachina.envs.constructors import parse_clip_string  # noqa: PLC0415
     from dexmachina.envs.rewards import get_reward_cfg  # noqa: PLC0415
     from dexmachina.envs.spec import EnvSpec  # noqa: PLC0415
-    from dexmachina.envs.vec_env import DexMachinaVecEnv  # noqa: PLC0415
 
     config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
     defaults = EnvSpec()
@@ -323,9 +348,26 @@ def make_dexmachina_env(num_envs, device, hydra_kwargs, seed, env_name=""):
     spec_values["clip"] = clip_str
     parse_clip_string(clip_str)
 
-    spec = replace(defaults, **spec_values)
     # Reward keys without a spec field (e.g. force_penalty, task_rew_weight) reach the RewardModule only as overrides.
-    return DexMachinaVecEnv.from_spec(spec, device, {} if rewards is None else dict(rewards))
+    return replace(defaults, **spec_values), {} if rewards is None else dict(rewards)
+
+
+def make_dexmachina_env(
+    num_envs: int, device: str, hydra_kwargs: Mapping[str, Any], seed: int, env_name: str = ""
+) -> "DexMachinaVecEnv":
+    """Build a DexMachinaVecEnv from FlashSAC's Hydra env kwargs."""
+    from dexmachina.envs.vec_env import DexMachinaVecEnv  # noqa: PLC0415
+
+    spec, reward_overrides = dexmachina_spec(num_envs, hydra_kwargs, seed, env_name)
+    return DexMachinaVecEnv.from_spec(spec, device, reward_overrides)
+
+
+def save_run_files(cfg: DictConfig, env: GenesisFlashSACWrapper, directory: Path) -> None:
+    """Writes what evaluation needs to rebuild the run's env and agent: env_spec.json and the resolved config.yaml."""
+    from dexmachina.envs.run_spec import save_run_spec  # noqa: PLC0415
+
+    save_run_spec(directory, env.env_spec, env.reward_overrides)
+    OmegaConf.save(cfg, directory / RUN_CONFIG_FILENAME, resolve=True)
 
 
 # Backwards Compatibility Aliases
