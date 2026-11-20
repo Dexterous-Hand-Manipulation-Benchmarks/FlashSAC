@@ -1,6 +1,5 @@
 import argparse
 import json
-import math
 import os
 import re
 from collections import defaultdict
@@ -19,7 +18,7 @@ import wandb
 import genesis as gs
 import gymnasium as gym
 from dexmachina.envs.base_env import BaseEnv
-from dexmachina.envs.evaluation import EvalScore, rollout_episode, save_trajectory, score
+from dexmachina.envs.evaluation import EvalScore, rollout_episode, save_trajectory, score, zero_action_floor
 from dexmachina.envs.factory import make_eval_env, task_hash
 from dexmachina.envs.run_spec import (
     RUN_SPEC_FILENAME,
@@ -71,12 +70,6 @@ RENDER_ERRORS = (gs.GenesisException, RuntimeError)
 # Success = per-frame ADD below the threshold, in metres.
 ADD_SUCCESS_THRESHOLDS_M = {"success_2cm": 0.02, "success_5cm": 0.05}
 
-# One floor file per (eval task, dexmachina commit): what the zero action scores on the eval protocol.
-FLOOR_FILENAME = "floor_{task_hash}_{sha}.json"
-FLOOR_POLICY = "zero"
-FLOOR_KEYS = frozenset(
-    {"hand", "clip", "task_hash", "dexmachina_sha", "dexmachina_dirty", "policy", "device", "per_seed_auc_add", "auc_add"}
-)
 # The eval agent never samples from or trains on its replay buffer, so it gets the smallest one.
 EVAL_BUFFER_LENGTH = 1
 # Not "eval/": the in-training evaluation logs its own eval/* keys, and the two must not share a chart.
@@ -307,12 +300,6 @@ def run_eval_pass(target_env, uenv, agent, metric_prefix, file_tag, out_dir, dem
 
 
 @dataclass(frozen=True)
-class Floor:
-    auc_add: float
-    device: str
-
-
-@dataclass(frozen=True)
 class BenchmarkEvaluation:
     """One checkpoint scored on the shared eval protocol, with what is needed to compare it across runs."""
 
@@ -320,7 +307,7 @@ class BenchmarkEvaluation:
     task_hash: str
     saved_state: DexmachinaState
     evaluated_state: DexmachinaState
-    floor: "Floor"
+    floor: EvalScore
     checkpoint_step: int
     env_step: int
 
@@ -346,7 +333,6 @@ class BenchmarkEvaluation:
         """What goes into the W&B run summary: it identifies the evaluation rather than being plotted."""
         provenance: dict[str, str | bool] = {
             "task_hash": self.task_hash,
-            "floor_device": self.floor.device,
             "dexmachina_sha/saved": self.saved_state.sha,
             "dexmachina_sha/evaluated": self.evaluated_state.sha,
             "dexmachina_dirty/saved": self.saved_state.dirty,
@@ -389,47 +375,6 @@ def checkpoint_step(checkpoint_dir: Path) -> int:
     return int(match.group(1))
 
 
-def read_floor(floor_dir: Path, hand: str, clip: str, task: str, evaluated_state: DexmachinaState) -> Floor:
-    """The zero-action ADD-AUC measured for this task at this dexmachina commit; refuses a file that is not that."""
-    path = floor_dir / FLOOR_FILENAME.format(task_hash=task, sha=evaluated_state.sha)
-    if not path.is_file():
-        raise FileNotFoundError(
-            f"{path} does not exist. Every eval logs the floor (what a zero action scores) for its task and "
-            f"dexmachina commit, and the floor of another task or commit is not the same number. Measure the floor "
-            f"for {hand} / {clip} (task {task}) at dexmachina {evaluated_state.sha[:12]} and save it under that "
-            f"name, with the keys {sorted(FLOOR_KEYS)}."
-        )
-    raw: object = json.loads(path.read_text())
-    content = cast(dict[str, Any], raw) if isinstance(raw, dict) else {}
-    if content.keys() != FLOOR_KEYS:
-        raise ValueError(
-            f"{path} must be a JSON object with exactly the keys {sorted(FLOOR_KEYS)}, got: {raw!r}. Rewrite it "
-            "with the floor measurement."
-        )
-    expected = {
-        "hand": hand, "clip": clip, "task_hash": task, "dexmachina_sha": evaluated_state.sha,
-        "dexmachina_dirty": False, "policy": FLOOR_POLICY,
-    }  # fmt: skip
-    wrong = {key: content[key] for key, value in expected.items() if content[key] != value}
-    if wrong:
-        raise ValueError(
-            f"{path} is not the floor of this evaluation: {wrong} differ from the expected {expected}. A floor "
-            "of another task, commit, policy or a dirty checkout would make the comparison meaningless. Measure the "
-            "floor again with the zero policy on a clean checkout."
-        )
-    per_seed = content["per_seed_auc_add"]
-    values: list[Any] = [*cast(list[Any], per_seed), content["auc_add"]] if isinstance(per_seed, list) else []
-    numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) for v in values)
-    if len(values) < 2 or not numbers or len(set(values)) != 1:  # noqa: PLR2004  (one seed value and the mean)
-        raise ValueError(
-            f"{path} has per_seed_auc_add {per_seed!r} and auc_add {content['auc_add']!r}. The zero action is "
-            "deterministic, so every seed gives the same finite number and auc_add equals it. Different values mean "
-            "the floor was measured under another protocol or the env is not deterministic: find out which before "
-            "using it."
-        )
-    return Floor(auc_add=float(content["auc_add"]), device=str(content["device"]))
-
-
 def build_eval_agent(
     agent_config: DictConfig, obs_dim: int, action_dim: int, action_clip: float, device: str
 ) -> BaseAgent[Any]:
@@ -468,12 +413,13 @@ def deterministic_actions(agent: BaseAgent[Any], observations: torch.Tensor, dev
     return torch.as_tensor(actions, dtype=torch.float32, device=device)
 
 
-def evaluate_benchmark(checkpoint_dir: Path, device: str, floor_dir: Path | None = None) -> BenchmarkEvaluation:
+def evaluate_benchmark(checkpoint_dir: Path, device: str) -> BenchmarkEvaluation:
     """Scores one checkpoint on the shared eval protocol, from what its run saved.
 
     `checkpoint_dir` is a step directory written by agent.save; the run's env_spec.json and config.yaml sit in its
-    parent, and so do the floor files unless `floor_dir` says otherwise. Genesis must be initialised for `device`.
+    parent. Genesis must be initialised for `device`.
     The agent acts with the mean of its policy (temperature 0, tanh of the mean) and a frozen observation normalizer.
+    The floor (a zero-action episode on the same env) runs before the policy's episode.
     The trajectory is saved next to the checkpoint as `benchmark_trajectory_<short dexmachina sha>.npz`.
     """
     run_dir = checkpoint_dir.parent
@@ -505,7 +451,6 @@ def evaluate_benchmark(checkpoint_dir: Path, device: str, floor_dir: Path | None
         )
     spec = run_spec.spec
     task = task_hash(spec)
-    floor = read_floor(floor_dir or run_dir, spec.hand, spec.clip, task, evaluated_state)
 
     enable_fast_matmul()
     set_random_seed(spec.seed)
@@ -513,6 +458,7 @@ def evaluate_benchmark(checkpoint_dir: Path, device: str, floor_dir: Path | None
     agent = build_eval_agent(agent_config, int(env.obs_dim), int(env.action_dim), float(env.action_clip), device)
     agent.load(str(checkpoint_dir))
 
+    floor = zero_action_floor(env, spec.hand, spec.clip)
     trajectory = rollout_episode(
         env, lambda obs: deterministic_actions(agent, obs, device), spec.hand, spec.clip, task, evaluated_state.sha
     )
