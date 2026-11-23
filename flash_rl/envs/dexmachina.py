@@ -26,6 +26,7 @@ CLIP_RANGE_PARTS = 3
 DEFAULT_SUBJECT_TAKE = "s01-01"
 BOX_CLIP = "box-30-230-s01-01"
 MIXER_CLIP = "mixer-0-150-s01-01"
+SHORT_CLIP_NAMES = {"box": BOX_CLIP, "mixer": MIXER_CLIP}
 # Retargeting the demos were made with; Hydra passes it from configs/env/dexmachina.yaml.
 DEFAULT_RETARGET_NAME = "para"
 
@@ -333,22 +334,17 @@ def dexmachina_spec(
                 rewards.get(OBJ_ARTI_BETA_KEY, defaults.task_rew_betas[2]),
             )
 
-    clip_str = config.clip
-    if "box" in clip_str or "box" in str(env_name):
-        clip_str = BOX_CLIP
-    elif "mixer" in clip_str or "mixer" in str(env_name):
-        clip_str = MIXER_CLIP
-    else:
-        parts = clip_str.split("-")
-        if len(parts) == CLIP_RANGE_PARTS:
-            clip_str = f"{clip_str}-{DEFAULT_SUBJECT_TAKE}"
-        elif len(parts) != CLIP_ID_PARTS:
-            raise ValueError(
-                f"env clip {clip_str!r} is not a dexmachina clip id: it has {len(parts)} '-'-separated parts, "
-                f"expected {CLIP_RANGE_PARTS} (object-start-end) or {CLIP_ID_PARTS} (object-start-end-subject-take). "
-                "Training on another clip than the one asked for would go unnoticed. Fix env.clip, e.g. "
-                f"{BOX_CLIP!r}."
-            )
+    clip_str = SHORT_CLIP_NAMES.get(config.clip, config.clip)
+    parts = clip_str.split("-")
+    if len(parts) == CLIP_RANGE_PARTS:
+        clip_str = f"{clip_str}-{DEFAULT_SUBJECT_TAKE}"
+    elif len(parts) != CLIP_ID_PARTS:
+        raise ValueError(
+            f"env clip {clip_str!r} is not a dexmachina clip id: it has {len(parts)} '-'-separated parts, "
+            f"expected {CLIP_RANGE_PARTS} (object-start-end) or {CLIP_ID_PARTS} (object-start-end-subject-take), "
+            f"or one of the short names {sorted(SHORT_CLIP_NAMES)}. Training on another clip than the one asked for "
+            f"would go unnoticed. Fix env.clip, e.g. {BOX_CLIP!r}."
+        )
 
     spec_values["clip"] = clip_str
     parse_clip_string(clip_str)
