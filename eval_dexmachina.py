@@ -87,6 +87,7 @@ SHORT_SHA_LENGTH = 12
 CHECKPOINT_DIRNAME = re.compile(r"step(\d+)")
 # Arguments of the old protocol; the new one takes everything from the run's saved files.
 OLD_PROTOCOL_ARGUMENTS = ("step", "num_episodes", "config_path", "config_name", "overrides", "video")
+BENCHMARK_ARGUMENTS = ("eval_seed", "allow_dirty_dexmachina")
 
 _original_init = BaseEnv.__init__
 
@@ -542,6 +543,13 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.old_protocol:
+        given = [name for name in BENCHMARK_ARGUMENTS if getattr(args, name) != parser.get_default(name)]
+        if given:
+            raise SystemExit(
+                f"error: --{', --'.join(name.replace('_', '-') for name in given)} only apply to the default "
+                "evaluation; --old-protocol builds its env from configs/ and would ignore them. Drop them, or drop "
+                "--old-protocol."
+            )
         run_old_protocol(args)
         return
     given = [name for name in OLD_PROTOCOL_ARGUMENTS if getattr(args, name) != parser.get_default(name)]
