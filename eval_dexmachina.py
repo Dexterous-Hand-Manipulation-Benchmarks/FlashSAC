@@ -415,7 +415,9 @@ def deterministic_actions(agent: BaseAgent[Any], observations: torch.Tensor, dev
     return torch.as_tensor(actions, dtype=torch.float32, device=device)
 
 
-def evaluate_benchmark(checkpoint_dir: Path, device: str) -> BenchmarkEvaluation:
+def evaluate_benchmark(
+    checkpoint_dir: Path, device: str, *, allow_dirty_dexmachina: bool = False
+) -> BenchmarkEvaluation:
     """Scores one checkpoint on the shared eval protocol, from what its run saved.
 
     `checkpoint_dir` is a step directory written by agent.save; the run's env_spec.json and config.yaml sit in its
@@ -423,6 +425,7 @@ def evaluate_benchmark(checkpoint_dir: Path, device: str) -> BenchmarkEvaluation
     The agent acts with the mean of its policy (temperature 0, tanh of the mean) and a frozen observation normalizer.
     The floor (a zero-action episode on the same env) runs before the policy's episode.
     The trajectory is saved next to the checkpoint as `benchmark_trajectory_<short dexmachina sha>.npz`.
+    A dexmachina checkout with uncommitted changes, at training or now, is refused unless `allow_dirty_dexmachina`.
     """
     run_dir = checkpoint_dir.parent
     for filename in (RUN_SPEC_FILENAME, RUN_CONFIG_FILENAME):
@@ -447,10 +450,17 @@ def evaluate_benchmark(checkpoint_dir: Path, device: str) -> BenchmarkEvaluation
             "comparable with other evaluations at this commit."
         )
     if saved_state.dirty or evaluated_state.dirty:
-        print(
-            f"[WARNING] dexmachina had uncommitted changes (training: {saved_state.dirty}, evaluation: "
-            f"{evaluated_state.dirty}), so its commit does not say which code ran."
+        state = (
+            f"dexmachina had uncommitted changes (training: {saved_state.dirty}, evaluation: {evaluated_state.dirty}), "
+            "so its commit does not say which code ran"
         )
+        if not allow_dirty_dexmachina:
+            raise RuntimeError(
+                f"{state}, and the score could not be reproduced or compared with other runs. Commit or stash the "
+                "changes in dexmachina (for training: retrain from a clean checkout), or pass "
+                "--allow-dirty-dexmachina for a debugging evaluation whose numbers are not reported."
+            )
+        print(f"[WARNING] {state}. Not for reported numbers.")
     spec = run_spec.spec
     task = task_hash(spec)
 
@@ -474,7 +484,9 @@ def evaluate_benchmark(checkpoint_dir: Path, device: str) -> BenchmarkEvaluation
 def run_benchmark(args: argparse.Namespace) -> None:
     backend: Any = gs.cpu if args.device.startswith("cpu") else gs.gpu  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportAttributeAccessIssue]
     gs.init(backend=backend, logging_level="warning")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
-    evaluation = evaluate_benchmark(Path(args.checkpoint_path).resolve(), args.device)
+    evaluation = evaluate_benchmark(
+        Path(args.checkpoint_path).resolve(), args.device, allow_dirty_dexmachina=args.allow_dirty_dexmachina
+    )
     metrics = evaluation.metrics()
     for name, value in {**metrics, **evaluation.provenance()}.items():
         print(f"{name}: {value}")
@@ -506,6 +518,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--old-protocol", action="store_true",
                         help="the earlier assisted/unassisted evaluation, built from configs/ and the overrides; "
                              "for runs without env_spec.json and config.yaml")
+    parser.add_argument("--allow-dirty-dexmachina", action="store_true",
+                        help="evaluate although dexmachina had uncommitted changes at training or now; for "
+                             "debugging, not for reported numbers (the lab runs' files are recorded as dirty)")
     return parser
 
 
