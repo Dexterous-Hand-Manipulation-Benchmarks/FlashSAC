@@ -18,7 +18,14 @@ import wandb
 import genesis as gs
 import gymnasium as gym
 from dexmachina.envs.base_env import BaseEnv
-from dexmachina.envs.evaluation import EvalScore, rollout_episode, save_trajectory, score, zero_action_floor
+from dexmachina.envs.evaluation import (
+    EVAL_SEED,
+    EvalScore,
+    rollout_episode,
+    save_trajectory,
+    score,
+    zero_action_floor,
+)
 from dexmachina.envs.factory import make_eval_env, task_hash
 from dexmachina.envs.run_spec import (
     RUN_SPEC_FILENAME,
@@ -310,6 +317,7 @@ class BenchmarkEvaluation:
     floor: EvalScore
     checkpoint_step: int
     env_step: int
+    eval_seed: int
 
     def metrics(self) -> dict[str, float]:
         """What goes into the W&B history."""
@@ -329,10 +337,11 @@ class BenchmarkEvaluation:
         metrics.update({f"auc_add_part/{part}": value for part, value in result.auc_add_part.items()})
         return {f"{BENCHMARK_PREFIX}/{name}": value for name, value in metrics.items()}
 
-    def provenance(self) -> dict[str, str | bool | None]:
+    def provenance(self) -> dict[str, str | bool | int | None]:
         """What goes into the W&B run summary: it identifies the evaluation rather than being plotted."""
-        provenance: dict[str, str | bool | None] = {
+        provenance: dict[str, str | bool | int | None] = {
             "task_hash": self.task_hash,
+            "eval_seed": self.eval_seed,
             "dexmachina_sha/saved": self.saved_state.sha,
             "dexmachina_sha/evaluated": self.evaluated_state.sha,
             "dexmachina_dirty/saved": self.saved_state.dirty,
@@ -416,7 +425,7 @@ def deterministic_actions(agent: BaseAgent[Any], observations: torch.Tensor, dev
 
 
 def evaluate_benchmark(
-    checkpoint_dir: Path, device: str, *, allow_dirty_dexmachina: bool = False
+    checkpoint_dir: Path, device: str, *, eval_seed: int = EVAL_SEED, allow_dirty_dexmachina: bool = False
 ) -> BenchmarkEvaluation:
     """Scores one checkpoint on the shared eval protocol, from what its run saved.
 
@@ -465,8 +474,8 @@ def evaluate_benchmark(
     task = task_hash(spec)
 
     enable_fast_matmul()
-    set_random_seed(spec.seed)
     env: Any = make_eval_env(spec, device)
+    set_random_seed(eval_seed)
     agent = build_eval_agent(agent_config, int(env.obs_dim), int(env.action_dim), float(env.action_clip), device)
     agent.load(str(checkpoint_dir))
 
@@ -477,7 +486,7 @@ def evaluate_benchmark(
     sha = evaluated_state.sha[:SHORT_SHA_LENGTH]
     save_trajectory(checkpoint_dir / TRAJECTORY_FILENAME.format(sha=sha), trajectory)
     return BenchmarkEvaluation(
-        score(trajectory), task, saved_state, evaluated_state, floor, step, step * spec.num_envs
+        score(trajectory), task, saved_state, evaluated_state, floor, step, step * spec.num_envs, eval_seed
     )
 
 
@@ -485,7 +494,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
     backend: Any = gs.cpu if args.device.startswith("cpu") else gs.gpu  # pyright: ignore[reportUnknownVariableType, reportUnknownMemberType, reportAttributeAccessIssue]
     gs.init(backend=backend, logging_level="warning")  # pyright: ignore[reportUnknownMemberType, reportUnknownArgumentType]
     evaluation = evaluate_benchmark(
-        Path(args.checkpoint_path).resolve(), args.device, allow_dirty_dexmachina=args.allow_dirty_dexmachina
+        Path(args.checkpoint_path).resolve(),
+        args.device,
+        eval_seed=args.eval_seed,
+        allow_dirty_dexmachina=args.allow_dirty_dexmachina,
     )
     metrics = evaluation.metrics()
     for name, value in {**metrics, **evaluation.provenance()}.items():
@@ -518,6 +530,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--old-protocol", action="store_true",
                         help="the earlier assisted/unassisted evaluation, built from configs/ and the overrides; "
                              "for runs without env_spec.json and config.yaml")
+    parser.add_argument("--eval-seed", type=int, default=EVAL_SEED,
+                        help="seed set after the eval env is built; the default is shared by all methods")
     parser.add_argument("--allow-dirty-dexmachina", action="store_true",
                         help="evaluate although dexmachina had uncommitted changes at training or now; for "
                              "debugging, not for reported numbers (the lab runs' files are recorded as dirty)")
