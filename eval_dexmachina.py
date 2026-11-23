@@ -329,14 +329,16 @@ class BenchmarkEvaluation:
         metrics.update({f"auc_add_part/{part}": value for part, value in result.auc_add_part.items()})
         return {f"{BENCHMARK_PREFIX}/{name}": value for name, value in metrics.items()}
 
-    def provenance(self) -> dict[str, str | bool]:
+    def provenance(self) -> dict[str, str | bool | None]:
         """What goes into the W&B run summary: it identifies the evaluation rather than being plotted."""
-        provenance: dict[str, str | bool] = {
+        provenance: dict[str, str | bool | None] = {
             "task_hash": self.task_hash,
             "dexmachina_sha/saved": self.saved_state.sha,
             "dexmachina_sha/evaluated": self.evaluated_state.sha,
             "dexmachina_dirty/saved": self.saved_state.dirty,
             "dexmachina_dirty/evaluated": self.evaluated_state.dirty,
+            "dexmachina_diff_sha256/saved": self.saved_state.diff_sha256,
+            "dexmachina_diff_sha256/evaluated": self.evaluated_state.diff_sha256,
         }
         return {f"{BENCHMARK_PREFIX}/{name}": value for name, value in provenance.items()}
 
@@ -436,7 +438,7 @@ def evaluate_benchmark(checkpoint_dir: Path, device: str) -> BenchmarkEvaluation
     agent_config = cast(DictConfig, config.agent)
     check_observation_normalizer(checkpoint_dir, bool(agent_config.normalize_observation))
 
-    saved_state = DexmachinaState(run_spec.dexmachina_sha, run_spec.dexmachina_dirty)
+    saved_state = run_spec.dexmachina_state
     evaluated_state = current_dexmachina_state()
     if evaluated_state.sha != saved_state.sha:
         print(
