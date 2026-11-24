@@ -79,9 +79,8 @@ def create_envs_and_agent(
 ]:
     seed_global_rngs(cfg.seed)
     train_env, eval_env, record_env = create_envs(**cfg.env)
-    # DexMachina's curriculum reseeds the global RNGs with a fixed 42 while the env is built
-    # (dexmachina/envs/curriculum.py), so without this every seed would start from the same weights
-    # and exploration noise.
+    # Resets while the env is built still draw from the global RNGs, so the state after the build would
+    # depend on what the build drew; seeding again makes the weights and exploration noise a function of the seed.
     seed_global_rngs(cfg.seed)
     # Gym spaces have their own RNG; the warm-up actions come from it.
     train_env.action_space.seed(cfg.seed)
