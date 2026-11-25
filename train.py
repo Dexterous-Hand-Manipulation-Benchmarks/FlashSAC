@@ -242,9 +242,6 @@ def run(args: argparse.Namespace) -> None:
             if terminateds[env_idx] or truncateds[env_idx]:
                 next_buffer_observations[env_idx] = env_infos["final_obs"][env_idx]
 
-        if "episode_info" in env_infos:
-            logger.update_metric(**env_infos["episode_info"])
-
         if getattr(cfg.agent, "bootstrap_on_timeout", True):
             safe_terminateds = terminateds.clone()
             safe_truncateds = truncateds.clone()
