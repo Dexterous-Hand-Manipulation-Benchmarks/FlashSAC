@@ -36,6 +36,8 @@ from flash_rl.common.torch_precision import enable_fast_matmul
 from flash_rl.envs import create_envs
 from flash_rl.envs.dexmachina import (
     TRACKING_METRICS,
+    check_curriculum_saw_the_trained_steps,
+    check_env_step_budget,
     curriculum_epoch,
     refuse_resume_with_fixed_schedule,
     save_run_files,
@@ -143,6 +145,7 @@ def run(args: argparse.Namespace) -> None:
     save_path_resolved = cfg.save_path.replace("TIMESTAMP", datetime.now().strftime("%m%d-%H%M%S"))
     save_path_base = script_dir + "/" + save_path_resolved
     if cfg.env.env_type == "dexmachina":
+        check_env_step_budget(train_env, int(cfg.num_env_steps))
         refuse_resume_with_fixed_schedule(train_env, cfg.agent_load_path, cfg.buffer_load_path)
         save_run_files(cfg, train_env, Path(save_path_base))
     if cfg.agent_load_path is not None:
@@ -312,6 +315,8 @@ def run(args: argparse.Namespace) -> None:
                     )
                     if curr_step is not None:
                         curriculum_logs["env/curriculum_step"] = float(curr_step)
+                    if hasattr(curr, "env_steps"):
+                        curriculum_logs["env/curriculum_env_steps"] = float(curr.env_steps)
 
                     # 3. Reward gradients
                     if hasattr(curr, "task_grad"):
@@ -389,6 +394,9 @@ def run(args: argparse.Namespace) -> None:
             if cfg.save_buffer_per_interaction_step and interaction_step % cfg.save_buffer_per_interaction_step == 0:
                 save_path = os.path.join(save_path_base, f"step{interaction_step}")
                 agent.save_replay_buffer(save_path)
+
+    if cfg.env.env_type == "dexmachina":
+        check_curriculum_saw_the_trained_steps(train_env, int(cfg.num_interaction_steps))
 
     # final evaluation
     eval_info = evaluate(agent, eval_env, cfg.num_eval_episodes, cfg.env.env_type)

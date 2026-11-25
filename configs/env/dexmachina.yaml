@@ -20,6 +20,6 @@ env:
   hand: 'allegro_hand'
   clip: 'box-30-230'
   retarget_name: 'para'
-  # Curriculum length in epochs: train.py spreads them evenly over the run, and dexmachina zeroes the object
-  # gains from epoch max_epochs - num_zero_epoch on.
+  # Curriculum length in epochs: train.py spreads them evenly over the run. Must equal the benchmark task's value
+  # (BENCHMARK_TASK in dexmachina), otherwise the run is refused.
   max_epochs: 10000

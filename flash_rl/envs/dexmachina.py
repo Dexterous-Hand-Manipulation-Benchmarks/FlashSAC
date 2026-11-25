@@ -1,5 +1,5 @@
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass
 from pathlib import Path
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, cast
@@ -38,12 +38,11 @@ REPORTED_INTERACTION_STEPS = REPORTED_ENV_STEPS // REPORTED_NUM_TRAIN_ENVS
 # The evaluation runs one env per kind, whatever the run it evaluates used.
 EVAL_ENV_COUNT_OVERRIDES = ("env.num_train_envs=1", "env.num_eval_envs=1", "env.num_record_envs=1")
 
-# Keys of dexmachina's reward config (envs/rewards.py) that the factory also maps onto dexmachina's args.
-OBJ_POS_BETA_KEY = "obj_pos_beta"
-OBJ_ROT_BETA_KEY = "obj_rot_beta"
-OBJ_ARTI_BETA_KEY = "obj_arti_beta"
-# Reward keys dexmachina's RewardModule reads with cfg.get (envs/rewards.py) but get_reward_cfg() leaves out.
+# Reward keys dexmachina's RewardModule reads with cfg.get(key, 0.0) (envs/rewards.py) but get_reward_cfg() leaves out.
 EXTRA_REWARD_KEYS = frozenset({"bc_wrist_weight"})
+
+# Building the task's reward config does not depend on the device.
+REWARD_CFG_DEVICE = "cpu"
 
 RUN_CONFIG_FILENAME = "config.yaml"
 
@@ -289,68 +288,73 @@ class GenesisFlashSACWrapper(gym.Env):
         self.vec_env.close()
 
 
-def dexmachina_spec(
-    num_envs: int, hydra_kwargs: Mapping[str, Any], seed: int, env_name: str = ""
-) -> "tuple[EnvSpec, dict[str, Any]]":
-    """FlashSAC's Hydra env kwargs as dexmachina's EnvSpec, and the reward overrides that have no EnvSpec field."""
-    # dexmachina is optional: FlashSAC runs other envs without it.
-    from dexmachina.envs.constructors import parse_clip_string  # noqa: PLC0415
-    from dexmachina.envs.rewards import get_reward_cfg  # noqa: PLC0415
-    from dexmachina.envs.spec import EnvSpec  # noqa: PLC0415
-
-    config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
-    defaults = EnvSpec()
-    if config.actuate_object and config.max_epochs <= defaults.num_zero_epoch:
-        raise ValueError(
-            f"max_epochs ({config.max_epochs}) must exceed num_zero_epoch ({defaults.num_zero_epoch}); "
-            "otherwise dexmachina zeroes the curriculum from the first epoch"
-        )
-    spec_values: dict[str, Any] = {
-        "num_envs": num_envs,
-        "seed": seed,
-        "actuate_object": config.actuate_object,
-        # The training loop's curriculum clock uses the same max_epochs, so zero_epoch aligns with the training length.
-        "max_epochs": config.max_epochs,
-        "retarget_name": config.retarget_name,
-        "use_rl_games": True,
-    }
-    if config.hand is not None:
-        spec_values["hand"] = config.hand
-
-    rewards = config.reward_overrides
-    if rewards is not None:
-        known_keys = set(cast(Mapping[str, Any], get_reward_cfg()))
-        unknown_keys = sorted(set(rewards) - known_keys - EXTRA_REWARD_KEYS)
-        if unknown_keys:
-            raise ValueError(f"unknown reward_cfg keys: {unknown_keys}")
-        # Keys that are spec fields go through the spec: dexmachina derives env_cfg["use_contact_reward"] and the
-        # demo/contact data loading from the args (envs/constructors.py).
-        spec_field_names = {f.name for f in fields(EnvSpec)}
-        spec_values.update({k: v for k, v in rewards.items() if k in spec_field_names})
-        if OBJ_POS_BETA_KEY in rewards or OBJ_ROT_BETA_KEY in rewards or OBJ_ARTI_BETA_KEY in rewards:
-            spec_values["task_rew_betas"] = (
-                rewards.get(OBJ_POS_BETA_KEY, defaults.task_rew_betas[0]),
-                rewards.get(OBJ_ROT_BETA_KEY, defaults.task_rew_betas[1]),
-                rewards.get(OBJ_ARTI_BETA_KEY, defaults.task_rew_betas[2]),
-            )
-
-    clip_str = SHORT_CLIP_NAMES.get(config.clip, config.clip)
+def full_clip_id(clip: str) -> str:
+    """The clip as "<object>-<start>-<end>-<subject>-<take>": short names and bare frame ranges are completed."""
+    clip_str = SHORT_CLIP_NAMES.get(clip, clip)
     parts = clip_str.split("-")
     if len(parts) == CLIP_RANGE_PARTS:
-        clip_str = f"{clip_str}-{DEFAULT_SUBJECT_TAKE}"
-    elif len(parts) != CLIP_ID_PARTS:
+        return f"{clip_str}-{DEFAULT_SUBJECT_TAKE}"
+    if len(parts) != CLIP_ID_PARTS:
         raise ValueError(
             f"env clip {clip_str!r} is not a dexmachina clip id: it has {len(parts)} '-'-separated parts, "
             f"expected {CLIP_RANGE_PARTS} (object-start-end) or {CLIP_ID_PARTS} (object-start-end-subject-take), "
             f"or one of the short names {sorted(SHORT_CLIP_NAMES)}. Training on another clip than the one asked for "
             f"would go unnoticed. Fix env.clip, e.g. {BOX_CLIP!r}."
         )
+    return clip_str
 
-    spec_values["clip"] = clip_str
-    parse_clip_string(clip_str)
 
-    # Reward keys without a spec field (e.g. force_penalty, task_rew_weight) reach the RewardModule only as overrides.
-    return replace(defaults, **spec_values), {} if rewards is None else dict(rewards)
+def dexmachina_spec(
+    num_envs: int, hydra_kwargs: Mapping[str, Any], seed: int, env_name: str = ""
+) -> "tuple[EnvSpec, dict[str, Any]]":
+    """The shared benchmark task for this run, and the run's reward overrides (all equal to the task's values).
+
+    A run chooses the hand, clip, seed and env count; a Hydra env or reward value that differs from the task raises.
+    """
+    # dexmachina is optional: FlashSAC runs other envs without it.
+    from dexmachina.envs.benchmark_task import RunChoices, benchmark_spec  # noqa: PLC0415
+    from dexmachina.envs.factory import build_env_kwargs  # noqa: PLC0415
+
+    config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
+    if config.hand is None:
+        raise ValueError("env.hand is not set; the hand decides the task, so there is no default. Set env.hand.")
+
+    spec = benchmark_spec(RunChoices(hand=config.hand, clip=full_clip_id(config.clip), seed=seed, num_envs=num_envs))
+
+    requested: dict[str, Any] = {
+        "actuate_object": config.actuate_object,
+        "max_epochs": config.max_epochs,
+        "retarget_name": config.retarget_name,
+    }
+    differing = {
+        name: (value, getattr(spec, name)) for name, value in requested.items() if value != getattr(spec, name)
+    }
+
+    rewards = config.reward_overrides
+    if rewards is not None:
+        task_rewards = {
+            **dict.fromkeys(EXTRA_REWARD_KEYS, 0.0),
+            **build_env_kwargs(spec, REWARD_CFG_DEVICE, {})["reward_cfg"],
+        }
+        unknown_keys = sorted(set(rewards) - set(task_rewards))
+        if unknown_keys:
+            raise ValueError(f"unknown reward_cfg keys: {unknown_keys}")
+        differing.update(
+            {
+                f"reward_cfg.{key}": (value, task_rewards[key])
+                for key, value in rewards.items()
+                if value != task_rewards[key]
+            }
+        )
+    if differing:
+        details = "; ".join(f"{name}: run {run!r}, task {task!r}" for name, (run, task) in differing.items())
+        raise ValueError(
+            f"the run sets env values that the benchmark task fixes ({details}). Methods are only comparable on "
+            "the same task. Remove these overrides (env.<key> or env.reward_cfg.<key>); "
+            "to change the task, change BENCHMARK_TASK in dexmachina."
+        )
+
+    return spec, {} if rewards is None else dict(rewards)
 
 
 def make_dexmachina_env(
@@ -383,6 +387,35 @@ def refuse_resume_with_fixed_schedule(
             "agent_load_path or buffer_load_path is set, but the curriculum schedule is 'fixed': its clock is the "
             "env's count of training steps, which a new run starts at 0, so the gains would restart at their start "
             "value while the loaded agent has trained further. Train from scratch (leave both paths null)."
+        )
+
+
+def check_env_step_budget(env: GenesisFlashSACWrapper, num_env_steps: int) -> None:
+    """Raises unless the training loop's env steps reach the task's budget, to within one interaction step."""
+    budget = env.env_spec.budget_env_steps
+    if budget is None:
+        raise ValueError("the env spec has no budget_env_steps; the benchmark task sets it, so build the spec from it.")
+    num_envs = env.env_spec.num_envs
+    trained = int(num_env_steps / num_envs) * num_envs
+    if not budget <= trained < budget + num_envs:
+        raise ValueError(
+            f"num_env_steps {num_env_steps} trains {trained} env steps (the loop runs int(num_env_steps / "
+            f"{num_envs}) interaction steps), but the task's budget is {budget}; a run must reach it within one "
+            f"interaction step, so {budget}..{budget + num_envs - 1}. The fixed curriculum schedule is a fraction of "
+            f"the budget, so a different length would end it early or never. Set num_env_steps to the smallest "
+            f"multiple of {num_envs} that is at least {budget}."
+        )
+
+
+def check_curriculum_saw_the_trained_steps(env: GenesisFlashSACWrapper, num_interaction_steps: int) -> None:
+    """Raises unless the env's curriculum clock counted exactly the env steps the training loop ran."""
+    curriculum = env.env.curriculum
+    trained = num_interaction_steps * env.env_spec.num_envs
+    if curriculum.env_steps != trained:
+        raise ValueError(
+            f"the curriculum counted {curriculum.env_steps} env steps but the training loop ran {trained}. The fixed "
+            "schedule is placed on the curriculum's own count, so it did not run as designed. Check that nothing "
+            "else steps the training env and that the evaluation env does not share the training env's curriculum."
         )
 
 
