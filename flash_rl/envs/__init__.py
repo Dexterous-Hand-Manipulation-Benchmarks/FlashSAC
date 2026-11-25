@@ -115,9 +115,7 @@ def create_envs(
 
         rl_device = kwargs.get("rl_device", "cuda:0")
         gs.init(backend=gs.cpu if str(rl_device).startswith("cpu") else gs.gpu, logging_level='warning')
-        env_seed = kwargs.get("seed", 0)
-
-        raw_train_env = make_dexmachina_env(num_train_envs, rl_device, kwargs, env_seed, env_name)
+        raw_train_env = make_dexmachina_env(num_train_envs, rl_device, kwargs, seed, env_name)
         train_env = GenesisFlashSACWrapper(raw_train_env, rl_device=rl_device)
         # Stepping the training env in evaluation would advance the curriculum's env step clock.
         eval_env = make_dexmachina_eval_env(train_env, rl_device)
