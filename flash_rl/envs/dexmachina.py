@@ -415,6 +415,20 @@ def check_curriculum_saw_the_trained_steps(env: GenesisFlashSACWrapper, num_inte
         )
 
 
+def refuse_dirty_dexmachina() -> None:
+    """Raises when the dexmachina checkout has uncommitted or untracked changes, as the benchmark evaluation does."""
+    from dexmachina.envs.run_spec import current_dexmachina_state  # noqa: PLC0415
+
+    state = current_dexmachina_state()
+    if state.dirty:
+        raise RuntimeError(
+            f"dexmachina at commit {state.sha[:12]} has uncommitted or untracked changes, so the commit does not say "
+            "which env code this run trains on, and the benchmark evaluation refuses such a run only after the "
+            "training is done. Commit or stash the changes in dexmachina (git status shows them), or pass "
+            "--allow-dirty-dexmachina for a debugging run whose numbers are not reported."
+        )
+
+
 def save_run_files(cfg: DictConfig, env: GenesisFlashSACWrapper, directory: Path) -> None:
     """Writes what evaluation needs to rebuild the run's env and agent: env_spec.json and the resolved config.yaml."""
     from dexmachina.envs.run_spec import save_run_spec  # noqa: PLC0415

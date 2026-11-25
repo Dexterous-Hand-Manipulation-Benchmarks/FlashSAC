@@ -39,6 +39,7 @@ from flash_rl.envs.dexmachina import (
     check_curriculum_saw_the_trained_steps,
     check_env_step_budget,
     curriculum_epoch,
+    refuse_dirty_dexmachina,
     refuse_resume_with_fixed_schedule,
     save_run_files,
     save_wandb_run_id,
@@ -108,6 +109,8 @@ def run(args: argparse.Namespace) -> None:
     # configs
     ###############################
     cfg = compose_config(args.config_path, args.config_name, args.overrides)
+    if cfg.env.env_type == "dexmachina" and not args.allow_dirty_dexmachina:
+        refuse_dirty_dexmachina()
 
     hand_name = getattr(cfg.env, "hand", "unknown_hand") if hasattr(cfg, "env") else "unknown_hand"
     clip_name = getattr(cfg.env, "clip", "unknown_clip") if hasattr(cfg, "env") else "unknown_clip"
@@ -410,5 +413,10 @@ if __name__ == "__main__":
     parser.add_argument("--config_path", type=str, default="./configs")
     parser.add_argument("--config_name", type=str, default="flashSAC_base")
     parser.add_argument("--overrides", action="append", default=[])
+    parser.add_argument(
+        "--allow-dirty-dexmachina",
+        action="store_true",
+        help="train although dexmachina has uncommitted changes; for debugging, not for reported numbers",
+    )
     args = parser.parse_args()
     run(args)
