@@ -41,6 +41,7 @@ from flash_rl.envs.dexmachina import (
     curriculum_epoch,
     refuse_resume_with_fixed_schedule,
     save_run_files,
+    save_wandb_run_id,
 )
 from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import NDArray, Tensor
@@ -146,6 +147,8 @@ def run(args: argparse.Namespace) -> None:
         check_env_step_budget(train_env, int(cfg.num_env_steps))
         refuse_resume_with_fixed_schedule(train_env, cfg.agent_load_path, cfg.buffer_load_path)
         save_run_files(cfg, train_env, Path(save_path_base))
+        if isinstance(logger, WandbTrainerLogger):
+            save_wandb_run_id(Path(save_path_base), logger.run.id)
     if cfg.agent_load_path is not None:
         load_path = os.path.join(script_dir, cfg.agent_load_path)
         agent.load(load_path)

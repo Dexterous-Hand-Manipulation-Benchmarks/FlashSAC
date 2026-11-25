@@ -45,6 +45,8 @@ EXTRA_REWARD_KEYS = frozenset({"bc_wrist_weight"})
 REWARD_CFG_DEVICE = "cpu"
 
 RUN_CONFIG_FILENAME = "config.yaml"
+# Read by scripts/flashsac/train.sh to log the evaluation into the training run.
+WANDB_RUN_ID_FILENAME = "wandb_run_id.txt"
 
 # Names under which the wrapper reports TrackingErrors in its infos; train.py logs them for the training env, so they
 # must not use the eval/ prefix of evaluate()'s own success rates.
@@ -421,3 +423,9 @@ def save_run_files(cfg: DictConfig, env: GenesisFlashSACWrapper, directory: Path
 
     save_run_spec(directory, env.env_spec, env.reward_overrides)
     OmegaConf.save(cfg, directory / RUN_CONFIG_FILENAME, resolve=True)
+
+
+def save_wandb_run_id(directory: Path, run_id: str) -> None:
+    """Writes the W&B run id next to env_spec.json, so the evaluation of the run's checkpoints can log into that run."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / WANDB_RUN_ID_FILENAME).write_text(f"{run_id}\n")
