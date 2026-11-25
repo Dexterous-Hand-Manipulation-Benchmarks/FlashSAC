@@ -374,6 +374,18 @@ def make_dexmachina_eval_env(train_env: GenesisFlashSACWrapper, device: str) -> 
     return GenesisFlashSACWrapper(DexMachinaVecEnv(cast(EnvInternals, eval_env)), rl_device=device)
 
 
+def refuse_resume_with_fixed_schedule(
+    env: GenesisFlashSACWrapper, agent_load_path: str | None, buffer_load_path: str | None
+) -> None:
+    """Raises when a run loads a checkpoint or buffer under the fixed curriculum schedule."""
+    if (agent_load_path or buffer_load_path) and env.env_spec.curr_schedule == "fixed":
+        raise ValueError(
+            "agent_load_path or buffer_load_path is set, but the curriculum schedule is 'fixed': its clock is the "
+            "env's count of training steps, which a new run starts at 0, so the gains would restart at their start "
+            "value while the loaded agent has trained further. Train from scratch (leave both paths null)."
+        )
+
+
 def save_run_files(cfg: DictConfig, env: GenesisFlashSACWrapper, directory: Path) -> None:
     """Writes what evaluation needs to rebuild the run's env and agent: env_spec.json and the resolved config.yaml."""
     from dexmachina.envs.run_spec import save_run_spec  # noqa: PLC0415

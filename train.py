@@ -34,7 +34,12 @@ from flash_rl.agents.base_agent import BaseAgent
 from flash_rl.common import WandbTrainerLogger, create_logger
 from flash_rl.common.torch_precision import enable_fast_matmul
 from flash_rl.envs import create_envs
-from flash_rl.envs.dexmachina import TRACKING_METRICS, curriculum_epoch, save_run_files
+from flash_rl.envs.dexmachina import (
+    TRACKING_METRICS,
+    curriculum_epoch,
+    refuse_resume_with_fixed_schedule,
+    save_run_files,
+)
 from flash_rl.evaluation import evaluate, record_video
 from flash_rl.types import NDArray, Tensor
 
@@ -138,6 +143,7 @@ def run(args: argparse.Namespace) -> None:
     save_path_resolved = cfg.save_path.replace("TIMESTAMP", datetime.now().strftime("%m%d-%H%M%S"))
     save_path_base = script_dir + "/" + save_path_resolved
     if cfg.env.env_type == "dexmachina":
+        refuse_resume_with_fixed_schedule(train_env, cfg.agent_load_path, cfg.buffer_load_path)
         save_run_files(cfg, train_env, Path(save_path_base))
     if cfg.agent_load_path is not None:
         load_path = os.path.join(script_dir, cfg.agent_load_path)
