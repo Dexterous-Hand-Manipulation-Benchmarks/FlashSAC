@@ -38,9 +38,6 @@ REPORTED_INTERACTION_STEPS = REPORTED_ENV_STEPS // REPORTED_NUM_TRAIN_ENVS
 # The evaluation runs one env per kind, whatever the run it evaluates used.
 EVAL_ENV_COUNT_OVERRIDES = ("env.num_train_envs=1", "env.num_eval_envs=1", "env.num_record_envs=1")
 
-# Reward keys dexmachina's RewardModule reads with cfg.get(key, 0.0) (envs/rewards.py) but get_reward_cfg() leaves out.
-EXTRA_REWARD_KEYS = frozenset({"bc_wrist_weight"})
-
 # Building the task's reward config does not depend on the device.
 REWARD_CFG_DEVICE = "cpu"
 
@@ -312,6 +309,7 @@ def dexmachina_spec(
     # dexmachina is optional: FlashSAC runs other envs without it.
     from dexmachina.envs.benchmark_task import RunChoices, benchmark_spec  # noqa: PLC0415
     from dexmachina.envs.factory import build_env_kwargs  # noqa: PLC0415
+    from dexmachina.envs.rewards import OPTIONAL_REWARD_KEYS  # noqa: PLC0415
 
     config = DexmachinaEnvConfig.from_hydra(hydra_kwargs, env_name)
     if config.hand is None:
@@ -331,7 +329,7 @@ def dexmachina_spec(
     rewards = config.reward_overrides
     if rewards is not None:
         task_rewards = {
-            **dict.fromkeys(EXTRA_REWARD_KEYS, 0.0),
+            **dict.fromkeys(OPTIONAL_REWARD_KEYS, 0.0),
             **build_env_kwargs(spec, REWARD_CFG_DEVICE, {})["reward_cfg"],
         }
         unknown_keys = sorted(set(rewards) - set(task_rewards))
