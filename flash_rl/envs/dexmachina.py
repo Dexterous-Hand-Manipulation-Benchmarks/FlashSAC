@@ -170,10 +170,8 @@ def to_uint8_rgb(image: np.ndarray) -> np.ndarray:
 
 
 class GenesisFlashSACWrapper(gym.Env):
-    """
-    Standardized Dexmachina Gymnasium wrapper for FlashSAC with online GPU tracking metrics,
-    NaN safeguards, zero-overhead success rate calculations, and dynamic attribute forwarding.
-    """
+    """Gymnasium wrapper around a DexMachinaVecEnv: adds the tracking metrics to the infos and forwards unknown
+    attributes to the BaseEnv."""
 
     def __init__(self, vec_env, rl_device="cuda:0"):
         super().__init__()
@@ -240,11 +238,9 @@ class GenesisFlashSACWrapper(gym.Env):
 
         infos = {"final_obs": vec_info["final_obs"]}
 
-        # --- High-Speed GPU Online Success & Tracking Error Metrics ---
         if hasattr(self.env, "rew_dict") and isinstance(self.env.rew_dict, dict):
             infos.update(TrackingErrors.from_rew_dict(self.env.rew_dict).log_means())
 
-        # --- Explicitly Forward Gain and Stiffness Parameters for WandB ---
         for param_name in ["kp", "kv", "fr", "kp_lower", "kv_lower", "fr_lower"]:
             if hasattr(self.env, param_name):
                 val = getattr(self.env, param_name)
@@ -281,7 +277,6 @@ class GenesisFlashSACWrapper(gym.Env):
             self.env.set_curriculum(epoch)
 
     def __getattr__(self, name):
-        """Pass-through helper to expose internal BaseEnv attributes seamlessly."""
         return getattr(self.env, name)
 
     def close(self):
@@ -425,11 +420,3 @@ def save_run_files(cfg: DictConfig, env: GenesisFlashSACWrapper, directory: Path
 
     save_run_spec(directory, env.env_spec, env.reward_overrides)
     OmegaConf.save(cfg, directory / RUN_CONFIG_FILENAME, resolve=True)
-
-
-# Backwards Compatibility Aliases
-DexmachinaWrapper = GenesisFlashSACWrapper
-DexmachinaEnv = GenesisFlashSACWrapper
-DexMachinaEnv = GenesisFlashSACWrapper
-DexMachinaWrapper = GenesisFlashSACWrapper
-GenesisWrapper = GenesisFlashSACWrapper

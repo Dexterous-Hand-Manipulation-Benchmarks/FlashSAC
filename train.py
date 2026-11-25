@@ -108,7 +108,6 @@ def run(args: argparse.Namespace) -> None:
     ###############################
     cfg = compose_config(args.config_path, args.config_name, args.overrides)
 
-    # --- DYNAMIC LOGGER INSTALLATION ---
     hand_name = getattr(cfg.env, "hand", "unknown_hand") if hasattr(cfg, "env") else "unknown_hand"
     clip_name = getattr(cfg.env, "clip", "unknown_clip") if hasattr(cfg, "env") else "unknown_clip"
     num_train = getattr(cfg, "num_train_envs", 1024)
@@ -124,7 +123,6 @@ def run(args: argparse.Namespace) -> None:
             num_train_envs=int(num_train),
             num_eval_envs=int(num_eval) if num_eval is not None else None,
         )
-    # -----------------------------------
 
     ###############################
     # configuration

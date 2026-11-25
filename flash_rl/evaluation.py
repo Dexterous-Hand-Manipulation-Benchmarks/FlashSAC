@@ -144,14 +144,10 @@ def record_video(
             actions = np.array(actions)
             next_observations, rewards, terminateds, truncateds, infos = env.step(actions)
 
-            # --- Convert GPU/CPU Tensors to NumPy for video termination checks ---
             if isinstance(terminateds, torch.Tensor):
                 terminateds = terminateds.detach().cpu().numpy()
             if isinstance(truncateds, torch.Tensor):
                 truncateds = truncateds.detach().cpu().numpy()
-            # ---------------------------------------------------------------------
-
-            prev_transition = {"next_observation": next_observations}
 
             prev_transition = {"next_observation": next_observations}
 
