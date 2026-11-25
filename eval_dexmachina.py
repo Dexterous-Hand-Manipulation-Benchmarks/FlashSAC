@@ -493,7 +493,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
     for name, value in {**metrics, **evaluation.provenance()}.items():
         print(f"{name}: {value}")
     if args.wandb_run_id:
-        run = wandb.init(id=args.wandb_run_id, project=args.project, entity=args.entity, resume="allow")
+        run = wandb.init(id=args.wandb_run_id, project=args.project, entity=args.entity, resume="must")
         wandb.define_metric(f"{BENCHMARK_PREFIX}/*", step_metric=f"{BENCHMARK_PREFIX}/env_step")
         wandb.log(metrics)
         run.summary.update(evaluation.provenance())  # pyright: ignore[reportUnknownMemberType]
