@@ -111,7 +111,7 @@ def create_envs(
     elif env_type == "dexmachina":
         import genesis as gs
 
-        from flash_rl.envs.dexmachina import GenesisFlashSACWrapper, make_dexmachina_env
+        from flash_rl.envs.dexmachina import GenesisFlashSACWrapper, make_dexmachina_env, make_dexmachina_eval_env
 
         rl_device = kwargs.get("rl_device", "cuda:0")
         gs.init(backend=gs.cpu if str(rl_device).startswith("cpu") else gs.gpu, logging_level='warning')
@@ -119,8 +119,9 @@ def create_envs(
 
         raw_train_env = make_dexmachina_env(num_train_envs, rl_device, kwargs, env_seed, env_name)
         train_env = GenesisFlashSACWrapper(raw_train_env, rl_device=rl_device)
-        eval_env = train_env
-        record_env = train_env
+        # Stepping the training env in evaluation would advance the curriculum's env step clock.
+        eval_env = make_dexmachina_eval_env(train_env, rl_device)
+        record_env = eval_env
 
     else:
         raise NotImplementedError

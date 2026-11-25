@@ -363,6 +363,17 @@ def make_dexmachina_env(
     return DexMachinaVecEnv.from_spec(spec, device, reward_overrides)
 
 
+def make_dexmachina_eval_env(train_env: GenesisFlashSACWrapper, device: str) -> GenesisFlashSACWrapper:
+    """The training env's evaluation twin: its own scene, one unassisted env that never moves the curriculum clock."""
+    from dexmachina.envs.factory import make_eval_env  # noqa: PLC0415
+    from dexmachina.envs.vec_env import DexMachinaVecEnv, EnvInternals  # noqa: PLC0415
+
+    # The eval env uses dexmachina's default reward, not the run's reward overrides: benchmark eval compares
+    # success and ADD across methods.
+    eval_env = make_eval_env(train_env.env_spec, device)
+    return GenesisFlashSACWrapper(DexMachinaVecEnv(cast(EnvInternals, eval_env)), rl_device=device)
+
+
 def save_run_files(cfg: DictConfig, env: GenesisFlashSACWrapper, directory: Path) -> None:
     """Writes what evaluation needs to rebuild the run's env and agent: env_spec.json and the resolved config.yaml."""
     from dexmachina.envs.run_spec import save_run_spec  # noqa: PLC0415
