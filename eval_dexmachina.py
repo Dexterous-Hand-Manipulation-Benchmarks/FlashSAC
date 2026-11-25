@@ -354,11 +354,7 @@ class BenchmarkEvaluation:
 
 
 def check_observation_normalizer(checkpoint_dir: Path, normalize_observation: bool) -> None:
-    """The saved config and the checkpoint must agree on the normalizer, because agent.load skips a missing file.
-
-    Only the observation normalizer is checked here; the actor weights are read by agent.load, which fails on a
-    missing file itself.
-    """
+    """A checkpoint with a normalizer file needs a config that normalizes; agent.load refuses the opposite case."""
     has_file = (checkpoint_dir / OBS_NORMALIZER_FILENAME).is_file()
     if has_file and not normalize_observation:
         raise ValueError(
@@ -366,13 +362,6 @@ def check_observation_normalizer(checkpoint_dir: Path, normalize_observation: bo
             "normalize_observation false. The agent would see raw observations although it trained on normalized "
             "ones, and its actions would be wrong without any error. Likely cause: the config.yaml next to the "
             "checkpoint is not the one of this run. Use the config.yaml the run saved."
-        )
-    if normalize_observation and not has_file:
-        raise FileNotFoundError(
-            f"{checkpoint_dir / OBS_NORMALIZER_FILENAME} does not exist, but the run's saved config has "
-            "normalize_observation true. agent.load would skip the missing file and evaluate with an untrained "
-            "normalizer, so the score would be wrong without any error. Point at a checkpoint directory that "
-            "agent.save wrote, or at the right run."
         )
 
 

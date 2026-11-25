@@ -28,6 +28,7 @@ from flash_rl.buffers.torch_buffer import TorchUniformBuffer
 from flash_rl.types import NDArray, Tensor
 
 OBS_NORMALIZER_FILENAME = "obs_normalizer.pt"
+CRITIC_OBS_NORMALIZER_FILENAME = "critic_obs_normalizer.pt"
 
 
 @dataclass
@@ -590,7 +591,7 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
         if self.obs_normalizer is not None:
             torch.save(self.obs_normalizer.state_dict(), os.path.join(path, OBS_NORMALIZER_FILENAME))
             if self._cfg.asymmetric_observation and self.critic_obs_normalizer is not None:
-                torch.save(self.critic_obs_normalizer.state_dict(), os.path.join(path, "critic_obs_normalizer.pt"))
+                torch.save(self.critic_obs_normalizer.state_dict(), os.path.join(path, CRITIC_OBS_NORMALIZER_FILENAME))
 
         agent_state: dict[str, Any] = {
             "update_step": self._update_step,
@@ -623,17 +624,24 @@ class FlashSACAgent(BaseAgent[FlashSACConfig]):
             self.reward_normalizer.load(os.path.join(path, "reward_normalizer.pt"))
 
         if self.obs_normalizer is not None:
-            obs_norm_path = os.path.join(path, OBS_NORMALIZER_FILENAME)
-            if os.path.exists(obs_norm_path):
-                self.obs_normalizer.load_state_dict(torch.load(obs_norm_path, map_location=self._device))
+            self.obs_normalizer.load_state_dict(self._load_normalizer_state(path, OBS_NORMALIZER_FILENAME))
             if self._cfg.asymmetric_observation and self.critic_obs_normalizer is not None:
-                critic_obs_norm_path = os.path.join(path, "critic_obs_normalizer.pt")
-                if os.path.exists(critic_obs_norm_path):
-                    self.critic_obs_normalizer.load_state_dict(
-                        torch.load(critic_obs_norm_path, map_location=self._device)
-                    )
+                self.critic_obs_normalizer.load_state_dict(
+                    self._load_normalizer_state(path, CRITIC_OBS_NORMALIZER_FILENAME)
+                )
 
         print(f"\033[32m[FlashSAC]\033[0m Successfully loaded checkpoint from {path}.")
+
+    def _load_normalizer_state(self, checkpoint_dir: str, filename: str) -> Any:
+        path = os.path.join(checkpoint_dir, filename)
+        if not os.path.exists(path):
+            raise FileNotFoundError(
+                f"{path} does not exist, but normalize_observation is true. Loading without it would leave the "
+                "normalizer untrained (mean 0, std 1) and the agent would act on raw observations without any "
+                "error. Likely cause: the checkpoint was saved by a version that did not save the normalizer, or "
+                "the directory is not a checkpoint of this run. Use a checkpoint that agent.save wrote."
+            )
+        return torch.load(path, map_location=self._device)
 
     def load_replay_buffer(self, path: str) -> None:
         self._replay_buffer.load(os.path.join(path, "replay_buffer.pt"))
