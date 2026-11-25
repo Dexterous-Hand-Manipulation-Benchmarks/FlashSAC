@@ -378,7 +378,8 @@ def run(args: argparse.Namespace) -> None:
                 logger.log_metric(step=env_step)
                 logger.reset()
             # checkpointing
-            if (
+            is_last_step = interaction_step == int(cfg.num_interaction_steps)
+            if is_last_step or (
                 cfg.save_checkpoint_per_interaction_step
                 and interaction_step % cfg.save_checkpoint_per_interaction_step == 0
             ):
