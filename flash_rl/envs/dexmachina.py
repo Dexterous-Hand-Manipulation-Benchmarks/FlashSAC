@@ -46,9 +46,10 @@ REWARD_CFG_DEVICE = "cpu"
 
 RUN_CONFIG_FILENAME = "config.yaml"
 
-# Names under which the wrapper reports TrackingErrors in its infos.
-SUCCESS_2CM_METRIC = "eval/success_2cm"
-SUCCESS_5CM_METRIC = "eval/success_5cm"
+# Names under which the wrapper reports TrackingErrors in its infos; train.py logs them for the training env, so they
+# must not use the eval/ prefix of evaluate()'s own success rates.
+SUCCESS_2CM_METRIC = "train/success_2cm"
+SUCCESS_5CM_METRIC = "train/success_5cm"
 POS_DIST_METRIC = "env/pos_dist"
 ROT_DIST_METRIC = "env/rot_dist"
 ARTI_DIST_METRIC = "env/arti_dist"
