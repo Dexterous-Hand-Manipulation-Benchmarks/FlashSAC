@@ -232,13 +232,8 @@ def run(args: argparse.Namespace) -> None:
         if "episode_info" in env_infos:
             logger.update_metric(**env_infos["episode_info"])
 
-        if isinstance(next_observations, torch.Tensor):
-            next_buffer_observations = next_observations.clone()
-        else:
-            next_buffer_observations = next_observations.copy()
-        for env_idx in range(cfg.num_train_envs):
-            if terminateds[env_idx] or truncateds[env_idx]:
-                next_buffer_observations[env_idx] = env_infos["final_obs"][env_idx]
+        episode_ended = terminateds | truncateds
+        next_buffer_observations = torch.where(episode_ended[:, None], env_infos["final_obs"], next_observations)
 
         if getattr(cfg.agent, "bootstrap_on_timeout", True):
             safe_terminateds = terminateds.clone()
