@@ -44,6 +44,9 @@ REWARD_CFG_DEVICE = "cpu"
 RUN_CONFIG_FILENAME = "config.yaml"
 # Read by scripts/flashsac/train.sh to log the evaluation into the training run.
 WANDB_RUN_ID_FILENAME = "wandb_run_id.txt"
+# Written by train.py after the last step, its checks and the final evaluation. scripts/flashsac/train.sh and
+# evaluate_run.sh evaluate only runs that have it: the final step directory also exists when a check failed.
+TRAINING_FINISHED_FILENAME = "training_finished"
 
 # Names under which the wrapper reports TrackingErrors in its infos; train.py logs them for the training env, so they
 # must not use the eval/ prefix of evaluate()'s own success rates.
@@ -441,3 +444,7 @@ def save_wandb_run_id(directory: Path, run_id: str) -> None:
     """Writes the W&B run id next to env_spec.json, so the evaluation of the run's checkpoints can log into that run."""
     directory.mkdir(parents=True, exist_ok=True)
     (directory / WANDB_RUN_ID_FILENAME).write_text(f"{run_id}\n")
+
+
+def mark_training_finished(directory: Path) -> None:
+    (directory / TRAINING_FINISHED_FILENAME).touch()

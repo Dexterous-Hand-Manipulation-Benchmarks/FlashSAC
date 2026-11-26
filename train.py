@@ -39,6 +39,7 @@ from flash_rl.envs.dexmachina import (
     check_curriculum_saw_the_trained_steps,
     check_env_step_budget,
     curriculum_epoch,
+    mark_training_finished,
     refuse_dirty_dexmachina,
     refuse_resume_with_fixed_schedule,
     save_run_files,
@@ -402,6 +403,8 @@ def run(args: argparse.Namespace) -> None:
     logger.update_metric(**video_info)
     logger.log_metric(step=env_step)
     logger.reset()
+    if cfg.env.env_type == "dexmachina":
+        mark_training_finished(Path(save_path_base))
 
     train_env.close()
     eval_env.close()
